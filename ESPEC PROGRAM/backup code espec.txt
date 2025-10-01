@@ -1,0 +1,381 @@
+import RPi.GPIO as GPIO
+import tkinter as tk
+from tkinter import messagebox
+import time
+import threading
+import os  # Import os for reboot and shutdown commands
+import sys
+
+
+# Define GPIO pins
+EMERGENCY_STOP_GPIO = 25  # Emergency Stop Button
+OUTPUT_Y0 = 14  # Y0 - Controlled Output
+GREEN_LIGHT = 15  # Green light (ON when Y0 is ON)
+RED_LIGHT = 17  # Red light (ON when Y0 is OFF)
+ORANGE_LIGHT = 18  # Orange light (ON initially)
+BUZZER = 23  # Buzzer (ON when timer ends)
+
+# GPIO Setup
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup(EMERGENCY_STOP_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(OUTPUT_Y0, GPIO.OUT)
+GPIO.setup(GREEN_LIGHT, GPIO.OUT)
+GPIO.setup(RED_LIGHT, GPIO.OUT)
+GPIO.setup(ORANGE_LIGHT, GPIO.OUT)
+GPIO.setup(BUZZER, GPIO.OUT)
+
+# Initial states
+GPIO.output(GREEN_LIGHT, GPIO.LOW)
+GPIO.output(RED_LIGHT, GPIO.LOW)  # Red is ON initially (Start Disabled)
+GPIO.output(ORANGE_LIGHT, GPIO.HIGH)  # Orange is ON by default
+GPIO.output(BUZZER, GPIO.LOW)
+
+# Global state
+output_state = False
+timer_running = False
+buzzer_active = False
+
+# Function to toggle buzzer on/off every second
+def buzzer_alarm():
+    while buzzer_active:
+        GPIO.output(BUZZER, GPIO.HIGH)
+        time.sleep(1)
+        GPIO.output(BUZZER, GPIO.LOW)
+        time.sleep(1)
+
+# Function to update lamp indicators
+def update_lamp_display():
+    red_canvas.config(bg="red" if GPIO.input(RED_LIGHT) else "gray")
+    green_canvas.config(bg="green" if GPIO.input(GREEN_LIGHT) else "gray")
+    orange_canvas.config(bg="orange" if GPIO.input(ORANGE_LIGHT) else "gray")
+
+# Function to handle BUZZER RESET button
+def buzzer_reset_pressed():
+    global buzzer_active
+    GPIO.output(BUZZER, GPIO.LOW)
+    buzzer_active = False
+    update_lamp_display()
+    reset_button.config(state=tk.NORMAL)  # Enable RESET button
+
+# Function to handle RESET button press
+def reset_pressed():
+    global output_state, timer_running, buzzer_active
+
+    if buzzer_active:
+        messagebox.showwarning("Reset Disabled", "Press Buzzer Reset first.")
+        return
+
+    # Reset all outputs
+    GPIO.output(OUTPUT_Y0, GPIO.LOW)
+    GPIO.output(GREEN_LIGHT, GPIO.LOW)
+    GPIO.output(RED_LIGHT, GPIO.LOW)
+    GPIO.output(ORANGE_LIGHT, GPIO.HIGH)
+    GPIO.output(BUZZER, GPIO.LOW)
+
+    output_state = False
+    timer_running = False
+    timer_label.config(text="Time Remaining: 0 min 0 sec")
+
+    update_status_label()
+    update_lamp_display()
+    reset_button.config(state=tk.DISABLED)  # Disable RESET until Buzzer Reset is pressed
+
+# Function to handle START button press (with Interlock)
+def start_pressed():
+    global output_state, timer_running
+
+    if GPIO.input(RED_LIGHT) == GPIO.HIGH:
+        messagebox.showerror("Interlock Active", "Cannot Start! Reset the system first.")
+        return
+
+    if GPIO.input(EMERGENCY_STOP_GPIO) == GPIO.HIGH:
+        messagebox.showerror("Emergency Stop", "Emergency Stop Activated! Cannot Start.")
+        return
+
+    if timer_running:
+        messagebox.showwarning("Timer Running", "Wait for the timer to complete before starting again.")
+        return
+
+    try:
+        minutes = int(min_entry.get())
+        seconds = int(sec_entry.get())
+        duration = (minutes * 60) + seconds
+
+        if duration <= 0:
+            messagebox.showerror("Invalid Timer", "Please enter a valid time.")
+            return
+    except ValueError:
+        messagebox.showerror("Invalid Input", "Please enter numeric values.")
+        return
+
+    output_state = True
+    GPIO.output(OUTPUT_Y0, GPIO.HIGH)
+    GPIO.output(GREEN_LIGHT, GPIO.HIGH)
+    GPIO.output(RED_LIGHT, GPIO.LOW)
+    GPIO.output(ORANGE_LIGHT, GPIO.LOW)
+    update_status_label()
+    update_lamp_display()
+
+    timer_thread = threading.Thread(target=timer_countdown, args=(duration,))
+    timer_thread.start()
+
+# Timer countdown function
+def timer_countdown(duration):
+    global buzzer_active, timer_running
+    timer_running = True
+
+    for remaining in range(duration, 0, -1):
+        if GPIO.input(EMERGENCY_STOP_GPIO) == GPIO.HIGH:
+            break
+        mins, secs = divmod(remaining, 60)
+        timer_label.config(text=f"Time Remaining: {mins} min {secs} sec")
+        time.sleep(1)
+
+    GPIO.output(OUTPUT_Y0, GPIO.LOW)
+    GPIO.output(GREEN_LIGHT, GPIO.LOW)
+    GPIO.output(RED_LIGHT, GPIO.HIGH)
+    GPIO.output(ORANGE_LIGHT, GPIO.HIGH)
+
+    buzzer_active = True
+    threading.Thread(target=buzzer_alarm, daemon=True).start()
+
+    timer_label.config(text="Time Remaining: 0 min 0 sec")
+    update_lamp_display()
+
+# Function to update the status label based on lamp states
+def update_status_label():
+    if GPIO.input(ORANGE_LIGHT) == GPIO.HIGH:
+        status_label.config(text="Status: Standby", fg="orange")  # Standby Mode
+    elif GPIO.input(GREEN_LIGHT) == GPIO.HIGH:
+        status_label.config(text="Status: Ongoing Curing", fg="green")  # Process Running
+    elif GPIO.input(ORANGE_LIGHT) == GPIO.HIGH or GPIO.input(RED_LIGHT) == GPIO.HIGH:
+        status_label.config(text="Status: Done Curing, Please Unload", fg="red")  # Curing Done
+    else:
+        status_label.config(text="Status: OFF", fg="gray")  # Default state
+
+# Function to monitor emergency stop
+def monitor_emergency_stop():
+    if GPIO.input(EMERGENCY_STOP_GPIO) == GPIO.HIGH:
+        # Turn OFF all outputs and lamps
+        GPIO.output(OUTPUT_Y0, GPIO.LOW)
+        GPIO.output(GREEN_LIGHT, GPIO.LOW)
+        GPIO.output(RED_LIGHT, GPIO.LOW)  # Red Lamp OFF
+        GPIO.output(ORANGE_LIGHT, GPIO.LOW)  # Orange Lamp OFF
+        GPIO.output(BUZZER, GPIO.LOW)  
+
+        # Reset state variables
+        global output_state, timer_running
+        output_state = False
+        timer_running = False
+
+        # Update UI elements
+        update_status_label()
+        update_lamp_display()
+        timer_label.config(text="Time Remaining: 0 min 0 sec")  # Reset timer display
+
+        messagebox.showwarning("Emergency Stop Triggered", "System Stopped! Release Emergency Stop to Continue")
+
+    root.after(100, monitor_emergency_stop)  # Continue monitoring
+
+# Function to increase/decrease minutes
+def adjust_minutes(value):
+    current = int(min_entry.get())
+    new_value = max(0, current + value)
+    min_entry.delete(0, tk.END)
+    min_entry.insert(0, str(new_value))
+
+# Function to increase/decrease seconds
+def adjust_seconds(value):
+    current = int(sec_entry.get())
+    new_value = max(0, current + value)
+    sec_entry.delete(0, tk.END)
+    sec_entry.insert(0, str(new_value))
+
+# System Control: Shutdown
+def shutdown():
+    confirm = messagebox.askyesno("Shutdown", "Are you sure you want to shutdown the system?")
+    if confirm:
+        os.system("sudo shutdown -h now")
+
+# System Control: Reboot
+def reboot():
+    confirm = messagebox.askyesno("Reboot", "Are you sure you want to reboot the system?")
+    if confirm:
+        os.system("sudo reboot")
+
+# Exit GUI
+def exit_app():
+    root.attributes('-fullscreen', False)  # Exit fullscreen
+    root.quit()  # Stop the Tkinter event loop
+    root.destroy()  # Destroy all UI elements
+
+    
+
+    # Terminate all threads
+    for thread in threading.enumerate():
+        if thread is not threading.main_thread():
+            try:
+                thread.join(timeout=0.1)  # Try stopping threads
+            except:
+                pass  # Ignore errors if a thread doesn't stop
+
+    os._exit(0)  # Hard exit the program
+
+# GUI Setup
+root = tk.Tk()
+root.title("PLC Control Panel")
+root.geometry("800x450")
+
+# Open in fullscreen mode
+root.attributes('-fullscreen', True)
+
+# Optionally, allow exiting fullscreen with 'Esc' key
+root.bind("<Escape>", lambda event: root.attributes('-fullscreen', False))
+
+# Status Label
+status_label = tk.Label(root, text="Status: Standby", font=("Arial", 14), fg="orange")
+status_label.pack(pady=10)
+
+# Start Button (Interlocked)
+start_button = tk.Button(root, text="START", font=("Arial", 30), bg="lightblue", command=start_pressed,width=10, height=2)
+start_button.place(x=15, y=350)
+
+# Reset Button
+reset_button = tk.Button(root, text="RESET", font=("Arial", 30), bg="orange", command=reset_pressed,width=10, height=2)
+reset_button.place(x=540, y=350)
+
+# Buzzer Reset Button
+buzzer_reset_button = tk.Button(root, text="BUZZER\nRESET", font=("Arial", 30), bg="yellow", command=buzzer_reset_pressed, width=10, height=2)
+buzzer_reset_button.place(x=280, y=350)
+
+# Shutdown Button
+shutdown_button = tk.Button(root, text="Shutdown", font=("Arial", 20), bg="gray", command=shutdown, width=8, height=1)
+shutdown_button.place(x=640, y=110)
+
+# Reboot Button
+reboot_button = tk.Button(root, text="Reboot", font=("Arial", 20), bg="gray", command=reboot, width=8, height=1)
+reboot_button.place(x=640, y=60)
+
+# Exit Button
+exit_button = tk.Button(root, text="Exit", font=("Arial", 20), bg="gray", command=exit_app, width=8, height=1)
+exit_button.place(x=640, y=10)
+
+# Timer Input Labels
+timer_label_text = tk.Label(root, text="Set Timer:", font=("Arial", 20))
+timer_label_text.pack(pady=5)
+
+# Timer Input Frame
+timer_frame = tk.Frame(root)
+timer_frame.pack()
+
+# Minutes Entry
+min_label = tk.Label(timer_frame, text="Minutes:", font=("Arial", 20))
+min_label.grid(row=0, column=0)
+min_entry = tk.Entry(timer_frame, font=("Arial", 20), width=5)
+min_entry.grid(row=0, column=1)
+min_entry.insert(0, "120")
+
+# Plus/Minus Buttons for Minutes
+min_plus = tk.Button(timer_frame, text="+", font=("Arial", 15), command=lambda: adjust_minutes(1))
+min_plus.grid(row=0, column=2)
+min_minus = tk.Button(timer_frame, text="-", font=("Arial", 15), command=lambda: adjust_minutes(-1))
+min_minus.grid(row=0, column=3)
+
+# Seconds Entry
+sec_label = tk.Label(timer_frame, text="Seconds:", font=("Arial", 20))
+sec_label.grid(row=1, column=0)
+sec_entry = tk.Entry(timer_frame, font=("Arial", 20), width=5)
+sec_entry.grid(row=1, column=1)
+sec_entry.insert(0, "0")
+
+# Plus/Minus Buttons for Seconds
+sec_plus = tk.Button(timer_frame, text="+", font=("Arial", 15), command=lambda: adjust_seconds(1))
+sec_plus.grid(row=1, column=2)
+sec_minus = tk.Button(timer_frame, text="-", font=("Arial", 15), command=lambda: adjust_seconds(-1))
+sec_minus.grid(row=1, column=3)
+
+# Timer Countdown Label
+timer_label = tk.Label(root, text="Time Remaining: 0 min 0 sec", font=("Arial", 20), fg="blue")
+timer_label.pack(pady=5)
+
+# Lamp Status Display
+lamp_frame = tk.Frame(root)
+lamp_frame.pack(pady=10)
+
+# Red Lamp
+red_canvas = tk.Canvas(lamp_frame, width=30, height=30, bg="gray")  # Red is ON initially
+red_canvas.grid(row=0, column=0, padx=10)
+
+# Green Lamp
+green_canvas = tk.Canvas(lamp_frame, width=30, height=30, bg="gray")
+green_canvas.grid(row=0, column=1, padx=10)
+
+# Orange Lamp
+orange_canvas = tk.Canvas(lamp_frame, width=30, height=30, bg="orange")  
+orange_canvas.grid(row=0, column=2, padx=10)
+
+# Global state to track current user mode (1 for Operation, 2 for Maintenance)
+current_user_mode = 1  # 1: Operation Mode, 2: Maintenance Mode
+
+# Function to toggle between User 1 (Operation) and User 2 (Maintenance)
+def toggle_user_mode():
+    global current_user_mode
+    
+    if current_user_mode == 1:  # If current mode is Operation, switch to Maintenance
+        password = password_entry.get()
+        if password == "244466666":
+            current_user_mode = 2  # Switch to Maintenance Mode
+            messagebox.showinfo("Mode Switched", "Switched to Maintenance Mode.")
+            # Enable the timer adjustments
+            min_plus.config(state=tk.NORMAL)
+            min_minus.config(state=tk.NORMAL)
+            sec_plus.config(state=tk.NORMAL)
+            sec_minus.config(state=tk.NORMAL)
+            user_mode_button.config(text="Switch to Operation Mode")
+            password_frame.pack_forget()  # Hide password entry
+        else:
+            messagebox.showerror("Access Denied", "Incorrect Password. Try Again.")
+    else:  # If current mode is Maintenance, switch to Operation
+        current_user_mode = 1  # Switch to Operation Mode
+        messagebox.showinfo("Mode Switched", "Switched to Operation Mode.")
+        # Disable the timer adjustments
+        min_plus.config(state=tk.DISABLED)
+        min_minus.config(state=tk.DISABLED)
+        sec_plus.config(state=tk.DISABLED)
+        sec_minus.config(state=tk.DISABLED)
+        user_mode_button.config(text="Switch to\n Maintenance Mode")
+        password_frame.pack()  # Show password entry for switching to maintenance
+
+# Create a password entry for switching to Maintenance Mode
+password_frame = tk.Frame(root)
+password_frame.pack(pady=10)
+
+password_label = tk.Label(password_frame, text="Enter Password for Maintenance Mode:", font=("Arial", 16))
+password_label.grid(row=0, column=0, padx=1)
+
+password_entry = tk.Entry(password_frame, font=("Arial", 16), show="*")
+password_entry.grid(row=0, column=1, padx=1)
+
+# User Mode Toggle Button
+user_mode_button = tk.Button(root, text="Switch to\n Maintenance Mode", font=("Arial", 16), command=toggle_user_mode)
+user_mode_button.place(x=10, y=10)
+
+# Initially, disable timer adjustments for User 1 (Operation)
+min_plus.config(state=tk.DISABLED)
+min_minus.config(state=tk.DISABLED)
+sec_plus.config(state=tk.DISABLED)
+sec_minus.config(state=tk.DISABLED)
+
+
+# Start emergency stop monitoring
+root.after(100, monitor_emergency_stop)
+
+# Run GUI
+root.mainloop()
+
+# Cleanup GPIO on exit
+GPIO.cleanup()
+
+
+msh,j

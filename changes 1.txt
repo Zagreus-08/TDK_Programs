@@ -1,0 +1,5 @@
+Changes on ESPEC Oven program:
+
+- The maintenance mode will now have only have time adjustment, the dropdown title renaming will be on both operation and maintenance mode now.
+- the door unlock will have a input your id number and name to access the door unlock button and it will store its id number and name to data log
+- To see the data log, it will have a button below that says data log and it will show the log of data of which who were the user to use the door unlock button.
