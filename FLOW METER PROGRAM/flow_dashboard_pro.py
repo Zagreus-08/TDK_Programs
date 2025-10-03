@@ -60,7 +60,7 @@ class FlowDashboard:
         ctk.set_default_color_theme("blue")
 
         # window
-        self.root.title("MF5708 Flow Dashboard")
+        self.root.title("MF5708 Flow Meter Dashboard")
         self.root.attributes("-fullscreen", True)
         self.root.bind("<Escape>", lambda e: self.root.attributes("-fullscreen", False))
 
@@ -297,7 +297,7 @@ class FlowDashboard:
             self.ax.set_xlim(cutoff, now)
             self.ax.set_ylim(0, max(max(ys_flow), max(ys_temp)) * 1.2)
 
-            self.ax.set_title("Live Flow / Total / Temp (Last 60s)")
+            self.ax.set_title("Live Flow / Total / Temp")
             self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
             self.ax.legend(loc="upper left")
             self.ax.grid(alpha=0.3)
