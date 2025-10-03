@@ -20,13 +20,13 @@ SCALE_F = PREVIEW_W / WIDTH_PX
 
 # ---- Layout positions (preview-space coords) ----
 positions_preview_page1 = {
-    "confidential": (40, 100),
-    "tdk_logo": (30, 100),
-    "bms": (30, 160),
+    "confidential": (35, 50),
+    "tdk_logo": (25, 50),
+    "bms": (25, 110),
 }
 
 positions_preview_page2 = {
-    "sensor": (40, -55),
+    "sensor": (, -55),
 }
 
 canvas_items_page1 = {
@@ -56,7 +56,7 @@ def load_pillow_fonts(height_px):
     try:
         font_large = ImageFont.truetype("arialbd.ttf", int(height_px * 0.19))
         font_medium = ImageFont.truetype("arial.ttf", int(height_px * 0.10))
-        font_small = ImageFont.truetype("arial.ttf", int(height_px * 0.10))
+        font_small = ImageFont.truetype("arial.ttf", int(height_px * 0.12))
         font_bms = ImageFont.truetype("arialbd.ttf", int(height_px * 0.10))
     except Exception:
         font_large = font_medium = font_small = font_bms = ImageFont.load_default()
@@ -98,7 +98,7 @@ def make_page2_image(sensor_text):
     qr_size = int(HEIGHT_PX * 0.50)
     qr = qrcode.make(sensor_text)
     qr = qr.resize((qr_size, qr_size), RESAMPLE)
-    page2.paste(qr, (WIDTH_PX - qr_size - 0, 35))
+    page2.paste(qr, (WIDTH_PX - qr_size - 10, 35))
 
     # Sensor ID text (wrapped and rotated)
     _, _, font_small, _ = load_pillow_fonts(HEIGHT_PX)

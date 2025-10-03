@@ -11,20 +11,20 @@ import tempfile
 MM_TO_INCH = 1 / 25.4
 # Print-specific settings
 DPI = 203
-WIDTH_MM, HEIGHT_MM = 19, 23
+WIDTH_MM, HEIGHT_MM = 19, 36
 WIDTH_PX = int(WIDTH_MM * DPI * MM_TO_INCH)
 HEIGHT_PX = int(HEIGHT_MM * DPI * MM_TO_INCH)
 
 # GUI preview settings
-PREVIEW_W, PREVIEW_H = 190, 230
+PREVIEW_W, PREVIEW_H = 190, 360
 SCALE_F = PREVIEW_W / WIDTH_PX
 
 # Default preview positions
 positions_preview = {
-    "sensor": (13, -140),          # Sensor ID (top-left)
-    "confidential": (13, 145),
-    "tdk_logo": (35, 150),      # Changed from "tdk" to "tdk_logo"
-    "bms": (5, 200),
+    "sensor": (13, -250),          # Sensor ID (top-left)
+    "confidential": (13, 240),
+    "tdk_logo": (20, 240),      # Changed from "tdk" to "tdk_logo"
+    "bms": (5, 300),
 }
 
 canvas_items = {
@@ -51,9 +51,9 @@ TDK_LOGO_PATH = r"C:\Users\a493353\Downloads\TDK-Logo.png"
 def load_pillow_fonts(height_px):
     try:
         font_large = ImageFont.truetype("arialbd.ttf", int(height_px * 0.19))
-        font_medium = ImageFont.truetype("arial.ttf", int(height_px * 0.10))
-        font_small = ImageFont.truetype("arial.ttf", int(height_px * 0.10))
-        font_bms = ImageFont.truetype("arialbd.ttf", int(height_px * 0.14))
+        font_medium = ImageFont.truetype("arial.ttf", int(height_px * 0.065))
+        font_small = ImageFont.truetype("arial.ttf", int(height_px * 0.065))
+        font_bms = ImageFont.truetype("arialbd.ttf", int(height_px * 0.10))
     except Exception: 
         font_large = font_medium = font_small = font_bms = ImageFont.load_default()
     return font_large, font_medium, font_small, font_bms
@@ -62,10 +62,10 @@ def load_pillow_fonts(height_px):
 def make_base_and_sensor_images(sensor_text):
     base = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
 
-    qr_size = int(HEIGHT_PX * 0.40)
+    qr_size = int(HEIGHT_PX * 0.25)
     qr = qrcode.make(sensor_text)
     qr = qr.resize((qr_size, qr_size), RESAMPLE)
-    base.paste(qr, (WIDTH_PX - qr_size - 15, 0))
+    base.paste(qr, (WIDTH_PX - qr_size - 15, 25))
 
     _, _, font_small, _ = load_pillow_fonts(HEIGHT_PX)
     parts = []
@@ -91,7 +91,7 @@ def load_tdk_logo(size_px):
         logo = Image.open(TDK_LOGO_PATH).convert("RGBA")
         logo_w, logo_h = logo.size
         # Resize logo to fit within the specified height
-        new_h = int(size_px * 0.30)
+        new_h = int(size_px * 0.25)
         if new_h > 0:
             new_w = int((logo_w / logo_h) * new_h)
             logo = logo.resize((new_w, new_h), RESAMPLE)
