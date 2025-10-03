@@ -26,7 +26,7 @@ positions_preview_page1 = {
 }
 
 positions_preview_page2 = {
-    "sensor": (, -55),
+    "sensor": (50, -55),
 }
 
 canvas_items_page1 = {
