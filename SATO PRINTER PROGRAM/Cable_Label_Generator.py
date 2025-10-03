@@ -11,26 +11,26 @@ import tempfile
 MM_TO_INCH = 1 / 25.4
 # Print-specific settings
 DPI = 203
-WIDTH_MM, HEIGHT_MM = 19, 18
+WIDTH_MM, HEIGHT_MM = 19, 23
 WIDTH_PX = int(WIDTH_MM * DPI * MM_TO_INCH)
 HEIGHT_PX = int(HEIGHT_MM * DPI * MM_TO_INCH)
 
 # GUI preview settings
-PREVIEW_W, PREVIEW_H = 190, 180
+PREVIEW_W, PREVIEW_H = 190, 230
 SCALE_F = PREVIEW_W / WIDTH_PX
 
 # Default preview positions
 positions_preview = {
-    "sensor": (23, -110),          # Sensor ID (top-left)
-    "confidential": (30, 105),
-    "tdk_logo": (20, 100),      # Changed from "tdk" to "tdk_logo"
-    "bms": (20, 158),
+    "sensor": (13, -140),          # Sensor ID (top-left)
+    "confidential": (13, 145),
+    "tdk_logo": (35, 150),      # Changed from "tdk" to "tdk_logo"
+    "bms": (5, 200),
 }
 
 canvas_items = {
     "bg": None,
     "sensor": None,
-    "confidential": None,
+    "confidential": None, 
     "tdk_logo": None,          # Changed from "tdk" to "tdk_logo"
     "bms": None,
 }
@@ -62,10 +62,10 @@ def load_pillow_fonts(height_px):
 def make_base_and_sensor_images(sensor_text):
     base = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
 
-    qr_size = int(HEIGHT_PX * 0.48)
+    qr_size = int(HEIGHT_PX * 0.40)
     qr = qrcode.make(sensor_text)
     qr = qr.resize((qr_size, qr_size), RESAMPLE)
-    base.paste(qr, (WIDTH_PX - qr_size - 15, -5))
+    base.paste(qr, (WIDTH_PX - qr_size - 15, 0))
 
     _, _, font_small, _ = load_pillow_fonts(HEIGHT_PX)
     parts = []
@@ -91,7 +91,7 @@ def load_tdk_logo(size_px):
         logo = Image.open(TDK_LOGO_PATH).convert("RGBA")
         logo_w, logo_h = logo.size
         # Resize logo to fit within the specified height
-        new_h = int(size_px * 0.45)
+        new_h = int(size_px * 0.30)
         if new_h > 0:
             new_w = int((logo_w / logo_h) * new_h)
             logo = logo.resize((new_w, new_h), RESAMPLE)
