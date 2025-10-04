@@ -26,7 +26,7 @@ positions_preview_page1 = {
 }
 
 positions_preview_page2 = {
-    "sensor": (50, -55),
+    "sensor": (20, -55),
 }
 
 canvas_items_page1 = {
@@ -141,17 +141,6 @@ def load_tdk_logo(size_px):
         messagebox.showwarning("Warning", f"Could not load TDK logo: {e}")
         return None
 
-# ---- Print helper (Windows Picture Printer dialog) ----
-def open_print_dialog(filepath):
-    """Open Windows Print Pictures dialog"""
-    if os.name == 'nt':
-        try:
-            subprocess.Popen(['rundll32.exe', 'shimgvw.dll,ImageView_PrintTo', filepath])
-        except Exception:
-            os.startfile(filepath, "print")
-    else:
-        raise Exception("Printing only supported on Windows")
-
 # ---- GUI ----
 root = tk.Tk()
 root.title("TDK Sensor Label Generator - Two Page (90x50mm)")
@@ -245,52 +234,65 @@ def print_labels_preview():
 
     try:
         temp_dir = tempfile.gettempdir()
-        temp_path1 = os.path.join(temp_dir, "temp_label_page1.png")
-        temp_path2 = os.path.join(temp_dir, "temp_label_page2.png")
+        tiff_path = os.path.join(temp_dir, "tdk_labels.tiff")
 
-        canvas1.page1_full.save(temp_path1, dpi=(DPI, DPI))
-        canvas2.page2_full.save(temp_path2, dpi=(DPI, DPI))
+        # Save both pages as a single multipage TIFF
+        canvas1.page1_full.save(
+            tiff_path,
+            format="TIFF",
+            save_all=True,
+            append_images=[canvas2.page2_full]
+        )
 
-        if os.name == 'nt':
-            os.startfile(temp_path1, "print")
-            os.startfile(temp_path2, "print")
-            messagebox.showinfo("Print", "Both labels sent to printer (via preview).")
-        else:
-            messagebox.showerror("Error", "Printing is currently only supported on Windows.")
+        # ✅ Open with Windows Photo Print wizard (goes straight to SATO driver)
+        os.startfile(tiff_path, "print")
+
     except Exception as e:
         messagebox.showerror("Print Error", f"Could not print: {e}")
+
 
 btn_print_preview.config(command=print_labels_preview)
 
 # ---- Direct print to SATO CG408 ----
+# ---- Direct print to SATO CG408 (no Microsoft Photos) ----
 def print_labels_direct():
-    """Generate, save, and silently print through the same driver path as preview."""
     s = entry.get().strip()
     if not s:
         messagebox.showwarning("No ID", "Please enter a Sensor ID first.")
         return
 
     try:
-        # Generate pages (so preview button not required)
         page1_full, _ = make_page1_image()
         page2_full = make_page2_image(s)
 
-        # Save as temp PNG (or BMP)
-        temp_dir = tempfile.gettempdir()
-        temp1 = os.path.join(temp_dir, "tdk_auto_page1.png")
-        temp2 = os.path.join(temp_dir, "tdk_auto_page2.png")
-        page1_full.save(temp1, dpi=(203, 203))
-        page2_full.save(temp2, dpi=(203, 203))
+        # Send each page directly to the printer
+        printer_name = "SATO CG408"   # or whatever exact name appears in Control Panel > Printers
+        hprinter = win32print.OpenPrinter(printer_name)
+        hdc = win32ui.CreateDC()
+        hdc.CreatePrinterDC(printer_name)
 
-        # Use the same OS-level print command the preview button uses — but silently
-        # This calls the printer driver *exactly* the same way, so positions match.
-        os.startfile(temp1, "print")
-        os.startfile(temp2, "print")
+        # Page 1
+        dib1 = ImageWin.Dib(page1_full)
+        hdc.StartDoc("TDK Label Page 1")
+        hdc.StartPage()
+        dib1.draw(hdc.GetHandleOutput(), (0, 0, page1_full.size[0], page1_full.size[1]))
+        hdc.EndPage()
 
-        messagebox.showinfo("✅ Printing", "Labels are being printed automatically...")
+        # Page 2
+        dib2 = ImageWin.Dib(page2_full)
+        hdc.StartPage()
+        dib2.draw(hdc.GetHandleOutput(), (0, 0, page2_full.size[0], page2_full.size[1]))
+        hdc.EndPage()
+
+        hdc.EndDoc()
+        hdc.DeleteDC()
+
+        messagebox.showinfo("✅ Printing", f"Label sent directly to printer:\n{printer_name}")
 
     except Exception as e:
         messagebox.showerror("Print Error", f"Direct print failed: {e}")
+
+
 
 btn_print_direct.config(command=print_labels_direct)
 
