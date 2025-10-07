@@ -1,72 +1,115 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from PIL import Image, ImageDraw, ImageFont, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageWin
 import qrcode
 import os
 import tempfile
+import subprocess
+import win32print
+import win32ui
+import random
 
-# ----------------------------
-# Configuration
-# ----------------------------
+# ---- Label and preview sizing ----
 MM_TO_INCH = 1 / 25.4
-# Print-specific settings
 DPI = 203
-WIDTH_MM, HEIGHT_MM = 19, 36
-WIDTH_PX = int(WIDTH_MM * DPI * MM_TO_INCH)
-HEIGHT_PX = int(HEIGHT_MM * DPI * MM_TO_INCH)
+WIDTH_MM, HEIGHT_MM = 19, 18
+WIDTH_PX = int(WIDTH_MM * DPI * MM_TO_INCH)   # ~720
+HEIGHT_PX = int(HEIGHT_MM * DPI * MM_TO_INCH) # ~400
 
-# GUI preview settings
-PREVIEW_W, PREVIEW_H = 190, 360
+PREVIEW_W, PREVIEW_H = 190, 180
 SCALE_F = PREVIEW_W / WIDTH_PX
 
-# Default preview positions
-positions_preview = {
-    "sensor": (13, -250),          # Sensor ID (top-left)
-    "confidential": (13, 240),
-    "tdk_logo": (20, 240),      # Changed from "tdk" to "tdk_logo"
-    "bms": (5, 300),
+# ---- Layout positions (preview-space coords) ----
+positions_preview_page1 = {
+    "confidential": (35, 50),
+    "tdk_logo": (25, 50),
+    "bms": (25, 110),
 }
 
-canvas_items = {
+positions_preview_page2 = {
+    "sensor": (20, -55),
+}
+
+canvas_items_page1 = {
     "bg": None,
-    "sensor": None,
-    "confidential": None, 
-    "tdk_logo": None,          # Changed from "tdk" to "tdk_logo"
+    "confidential": None,
+    "tdk_logo": None,
     "bms": None,
 }
 
-# Global image references (to prevent garbage collection)
+canvas_items_page2 = {
+    "bg": None,
+    "sensor": None,
+}
+
 _global_images = {}
 
-# ✅ Compatibility wrapper for resampling
+# ---- Pillow resample mode ----
 try:
     RESAMPLE = Image.Resampling.LANCZOS
 except AttributeError:
     RESAMPLE = Image.ANTIALIAS
 
-# TDK Logo Path
 TDK_LOGO_PATH = r"C:\Users\a493353\Downloads\TDK-Logo.png"
 
-# Fonts for final rendered image
+# ---- Fonts ----
 def load_pillow_fonts(height_px):
     try:
         font_large = ImageFont.truetype("arialbd.ttf", int(height_px * 0.19))
-        font_medium = ImageFont.truetype("arial.ttf", int(height_px * 0.065))
-        font_small = ImageFont.truetype("arial.ttf", int(height_px * 0.065))
+        font_medium = ImageFont.truetype("arial.ttf", int(height_px * 0.10))
+        font_small = ImageFont.truetype("arial.ttf", int(height_px * 0.12))
         font_bms = ImageFont.truetype("arialbd.ttf", int(height_px * 0.10))
-    except Exception: 
+    except Exception:
         font_large = font_medium = font_small = font_bms = ImageFont.load_default()
     return font_large, font_medium, font_small, font_bms
 
-# Generate base + rotated sensor
-def make_base_and_sensor_images(sensor_text):
-    base = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
+# ---- Sensor ID Generator ----
+def generate_sensor_id():
+    year = str(random.randint(20, 25))
+    month = str(random.randint(1, 12)).zfill(2)
+    batch = str(random.randint(10000, 99999))
+    serial = str(random.randint(100000, 999999))
+    return f"{year}-{month}-{batch}-{serial}"
 
-    qr_size = int(HEIGHT_PX * 0.25)
+# ---- Page generators ----
+def make_page1_image():
+    page1 = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
+    draw = ImageDraw.Draw(page1)
+    _, font_medium, _, font_bms = load_pillow_fonts(HEIGHT_PX)
+
+    # "CONFIDENTIAL" text
+    draw.text(
+        (int(positions_preview_page1["confidential"][0] / SCALE_F),
+         int(positions_preview_page1["confidential"][1] / SCALE_F)),
+        "CONFIDENTIAL", font=font_medium, fill="black"
+    )
+
+    # TDK logo
+    tdk_logo = load_tdk_logo(HEIGHT_PX)
+    if tdk_logo:
+        logo_x = int(positions_preview_page1["tdk_logo"][0] / SCALE_F)
+        logo_y = int(positions_preview_page1["tdk_logo"][1] / SCALE_F)
+        page1.paste(tdk_logo, (logo_x, logo_y), tdk_logo)
+
+    # BMS text
+    draw.text(
+        (int(positions_preview_page1["bms"][0] / SCALE_F),
+         int(positions_preview_page1["bms"][1] / SCALE_F)),
+        "BMS-SENSOR-05", font=font_bms, fill="black"
+    )
+
+    return page1, tdk_logo
+
+def make_page2_image(sensor_text):
+    page2 = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
+
+    # QR code
+    qr_size = int(HEIGHT_PX * 0.50)
     qr = qrcode.make(sensor_text)
     qr = qr.resize((qr_size, qr_size), RESAMPLE)
-    base.paste(qr, (WIDTH_PX - qr_size - 15, 25))
+    page2.paste(qr, (WIDTH_PX - qr_size - 10, 35))
 
+    # Sensor ID text (wrapped and rotated)
     _, _, font_small, _ = load_pillow_fonts(HEIGHT_PX)
     parts = []
     s = sensor_text or ""
@@ -78,223 +121,199 @@ def make_base_and_sensor_images(sensor_text):
         parts.append(s[12:])
     sensor_multiline = "\n".join(parts)
 
-    sensor_img_full = Image.new("RGBA", (HEIGHT_PX, 200), (0, 0, 0, 0))
+    sensor_img_full = Image.new("RGBA", (HEIGHT_PX, 400), (0, 0, 0, 0))
     sd = ImageDraw.Draw(sensor_img_full)
     sd.multiline_text((0, 0), sensor_multiline, font=font_small, fill=(0, 0, 0, 255), spacing=2)
     rotated_sensor_full = sensor_img_full.rotate(90, expand=True)
 
-    return base, rotated_sensor_full
+    px, py = positions_preview_page2["sensor"]
+    full_x = int(px / SCALE_F)
+    full_y = int(py / SCALE_F)
+    page2.paste(rotated_sensor_full, (full_x, full_y), rotated_sensor_full)
 
-# Load and resize TDK logo
+    return page2
+
+# ---- Assets ----
 def load_tdk_logo(size_px):
     try:
         logo = Image.open(TDK_LOGO_PATH).convert("RGBA")
         logo_w, logo_h = logo.size
-        # Resize logo to fit within the specified height
-        new_h = int(size_px * 0.25)
+        new_h = int(size_px * 0.45)
         if new_h > 0:
             new_w = int((logo_w / logo_h) * new_h)
             logo = logo.resize((new_w, new_h), RESAMPLE)
         return logo
     except FileNotFoundError:
-        messagebox.showerror("Error", f"TDK logo file not found at: {TDK_LOGO_PATH}")
+        messagebox.showwarning("Warning", f"TDK logo file not found at: {TDK_LOGO_PATH}")
         return None
     except Exception as e:
-        messagebox.showerror("Error", f"Could not load TDK logo: {e}")
+        messagebox.showwarning("Warning", f"Could not load TDK logo: {e}")
         return None
 
-# Make preview images
-def make_preview_images(base_full, sensor_full, tdk_logo_full):
-    preview_base = base_full.resize((PREVIEW_W, PREVIEW_H), RESAMPLE)
-    f = SCALE_F
-    w_s, h_s = sensor_full.size
-    preview_sensor = sensor_full.resize((max(1, int(w_s * f)), max(1, int(h_s * f))), RESAMPLE)
-
-    if tdk_logo_full:
-        w_l, h_l = tdk_logo_full.size
-        preview_tdk_logo = tdk_logo_full.resize((max(1, int(w_l * f)), max(1, int(h_l * f))), RESAMPLE)
-    else:
-        preview_tdk_logo = None
-
-    return preview_base, preview_sensor, preview_tdk_logo
-
-# Compose final label
-def compose_final_image(base_full, sensor_full, tdk_logo_full, positions_preview_local):
-    final = base_full.copy()
-    draw = ImageDraw.Draw(final)
-    font_large, font_medium, font_small, font_bms = load_pillow_fonts(HEIGHT_PX)
-
-    px, py = positions_preview_local["sensor"]
-    full_x = int(px / SCALE_F)
-    full_y = int(py / SCALE_F)
-    final.paste(sensor_full, (full_x, full_y), sensor_full)
-
-    draw.text((int(positions_preview_local["confidential"][0] / SCALE_F),
-               int(positions_preview_local["confidential"][1] / SCALE_F)),
-              "CONFIDENTIAL", font=font_medium, fill="black")
-
-    if tdk_logo_full:
-        logo_x = int(positions_preview_local["tdk_logo"][0] / SCALE_F)
-        logo_y = int(positions_preview_local["tdk_logo"][1] / SCALE_F)
-        final.paste(tdk_logo_full, (logo_x, logo_y), tdk_logo_full)
-
-    draw.text((int(positions_preview_local["bms"][0] / SCALE_F),
-               int(positions_preview_local["bms"][1] / SCALE_F)),
-              "BMS-SENSOR-05", font=font_small, fill="black")
-
-    return final
-
-# -------------------------
-# GUI
-# -------------------------
+# ---- GUI ----
 root = tk.Tk()
-root.title("TDK Sensor Label Generator (draggable)")
+root.title("TDK Sensor Label Generator - Two Page (90x50mm)")
 
 tk.Label(root, text="Enter Sensor ID:").pack(pady=5)
 entry = tk.Entry(root, width=30)
 entry.pack(pady=5)
 
-btn_generate = tk.Button(root, text="Generate Label")
-btn_generate.pack(pady=5)
-btn_save = tk.Button(root, text="Save Label")
-btn_save.pack(pady=5)
+btn_frame_top = tk.Frame(root)
+btn_frame_top.pack(pady=5)
 
-# Added new print button
-btn_print = tk.Button(root, text="Print Label")
-btn_print.pack(pady=5)
+def generate_new_label():
+    new_id = generate_sensor_id()
+    entry.delete(0, tk.END)
+    entry.insert(0, new_id)
+    update_preview()
 
-canvas = tk.Canvas(root, width=PREVIEW_W+10, height=PREVIEW_H+10, bg="grey")
-canvas.pack(pady=10)
+btn_generate_new = tk.Button(btn_frame_top, text="Generate New Label", command=generate_new_label)
+btn_generate_new.pack(side=tk.LEFT, padx=5)
 
-# ✅ Create PhotoImage AFTER canvas exists
+btn_generate = tk.Button(btn_frame_top, text="Update Preview")
+btn_generate.pack(side=tk.LEFT, padx=5)
+
+btn_frame = tk.Frame(root)
+btn_frame.pack(pady=5)
+
+btn_save = tk.Button(btn_frame, text="Save Both Labels", bg="lightblue")
+btn_save.pack(side=tk.LEFT, padx=5)
+
+btn_print_preview = tk.Button(btn_frame, text="Print (with preview)", bg="lightgreen")
+btn_print_preview.pack(side=tk.LEFT, padx=5)
+
+btn_print_direct = tk.Button(btn_frame, text="Direct Print", bg="orange")
+btn_print_direct.pack(side=tk.LEFT, padx=5)
+
+canvas_frame = tk.Frame(root)
+canvas_frame.pack(pady=10)
+
+tk.Label(canvas_frame, text="Page 1: Info", font=("Arial", 10, "bold")).grid(row=0, column=0, padx=5)
+tk.Label(canvas_frame, text="Page 2: QR + ID", font=("Arial", 10, "bold")).grid(row=0, column=1, padx=5)
+
+canvas1 = tk.Canvas(canvas_frame, width=PREVIEW_W+10, height=PREVIEW_H+10, bg="grey")
+canvas1.grid(row=1, column=0, padx=5)
+
+canvas2 = tk.Canvas(canvas_frame, width=PREVIEW_W+10, height=PREVIEW_H+10, bg="grey")
+canvas2.grid(row=1, column=1, padx=5)
+
 blank_preview = Image.new("RGB", (PREVIEW_W, PREVIEW_H), "white")
 blank_photo = ImageTk.PhotoImage(blank_preview, master=root)
-_global_images["blank"] = blank_photo  # keep alive
+_global_images["blank"] = blank_photo
 
-canvas_bg = canvas.create_image(5, 5, anchor="nw", image=blank_photo)
+canvas1_bg = canvas1.create_image(5, 5, anchor="nw", image=blank_photo)
+canvas2_bg = canvas2.create_image(5, 5, anchor="nw", image=blank_photo)
 
-canvas.base_full = None
-canvas.sensor_full = None
-canvas.tdk_logo_full = None  # New reference for the full-size logo
+canvas1.page1_full = None
+canvas2.page2_full = None
 
-# Overlay text placeholders
-canvas_items["sensor"] = canvas.create_image(positions_preview["sensor"][0] + 5,
-                                             positions_preview["sensor"][1] + 5,
-                                             anchor="nw", image=None, tags=("sensor",))
-canvas_items["confidential"] = canvas.create_text(positions_preview["confidential"][0] + 5,
-                                                 positions_preview["confidential"][1] + 5,
-                                                 text="CONFIDENTIAL", anchor="nw", tags=("confidential",))
-canvas_items["tdk_logo"] = canvas.create_image(positions_preview["tdk_logo"][0] + 5, # changed from create_text to create_image
-                                             positions_preview["tdk_logo"][1] + 5,
-                                             anchor="nw", image=None, tags=("tdk_logo",))
-canvas_items["bms"] = canvas.create_text(positions_preview["bms"][0] + 5,
-                                         positions_preview["bms"][1] + 5,
-                                         text="BMS-SENSOR-05", anchor="nw", tags=("bms",))
-
-# Dragging logic
-drag_data = {"item": None, "x": 0, "y": 0}
-def on_button_press(event):
-    items = canvas.find_overlapping(event.x, event.y, event.x, event.y)
-    if items:
-        item = items[-1]
-        if item != canvas_bg:
-            drag_data["item"] = item
-            drag_data["x"] = event.x
-            drag_data["y"] = event.y
-
-def on_motion(event):
-    item = drag_data.get("item")
-    if item:
-        dx = event.x - drag_data["x"]
-        dy = event.y - drag_data["y"]
-        canvas.move(item, dx, dy)
-        drag_data["x"] = event.x
-        drag_data["y"] = event.y
-        tag = canvas.gettags(item)[0]
-        coords = canvas.coords(item)
-        positions_preview[tag] = (coords[0]-5, coords[1]-5)
-
-def on_button_release(event):
-    drag_data["item"] = None
-
-canvas.bind("<ButtonPress-1>", on_button_press)
-canvas.bind("<B1-Motion>", on_motion)
-canvas.bind("<ButtonRelease-1>", on_button_release)
-
-# Preview update
+# ---- Preview ----
 def update_preview():
     s = entry.get().strip()
-    base_full, sensor_full = make_base_and_sensor_images(s)
-    tdk_logo_full = load_tdk_logo(HEIGHT_PX)
-    
-    canvas.base_full = base_full
-    canvas.sensor_full = sensor_full
-    canvas.tdk_logo_full = tdk_logo_full
+    page1_full, _ = make_page1_image()
+    page2_full = make_page2_image(s)
 
-    preview_base, preview_sensor, preview_tdk_logo = make_preview_images(base_full, sensor_full, tdk_logo_full)
+    canvas1.page1_full = page1_full
+    canvas2.page2_full = page2_full
 
-    ph = ImageTk.PhotoImage(preview_base, master=root)
-    _global_images["preview_base"] = ph    # ✅ keep alive
-    canvas.itemconfig(canvas_bg, image=ph)
+    preview1 = page1_full.resize((PREVIEW_W, PREVIEW_H), RESAMPLE)
+    preview2 = page2_full.resize((PREVIEW_W, PREVIEW_H), RESAMPLE)
 
-    ps = ImageTk.PhotoImage(preview_sensor, master=root)
-    _global_images["preview_sensor"] = ps  # ✅ keep alive
-    canvas.itemconfig(canvas_items["sensor"], image=ps)
-    canvas.coords(canvas_items["sensor"], positions_preview["sensor"][0]+5, positions_preview["sensor"][1]+5)
-    
-    # Update TDK logo preview
-    if preview_tdk_logo:
-        pl = ImageTk.PhotoImage(preview_tdk_logo, master=root)
-        _global_images["preview_tdk_logo"] = pl # ✅ keep alive
-        canvas.itemconfig(canvas_items["tdk_logo"], image=pl)
-        canvas.coords(canvas_items["tdk_logo"], positions_preview["tdk_logo"][0]+5, positions_preview["tdk_logo"][1]+5)
-    else:
-        # Hide the logo item if it can't be loaded
-        canvas.itemconfig(canvas_items["tdk_logo"], image=None)
+    ph1 = ImageTk.PhotoImage(preview1, master=root)
+    _global_images["preview1"] = ph1
+    canvas1.itemconfig(canvas1_bg, image=ph1)
+
+    ph2 = ImageTk.PhotoImage(preview2, master=root)
+    _global_images["preview2"] = ph2
+    canvas2.itemconfig(canvas2_bg, image=ph2)
 
 btn_generate.config(command=update_preview)
 
-# Save
-def save_label():
-    if canvas.base_full is None:
-        messagebox.showwarning("No preview", "Generate the label first.")
+# ---- Save labels ----
+def save_labels():
+    if canvas1.page1_full is None or canvas2.page2_full is None:
+        messagebox.showwarning("No preview", "Generate the labels first.")
         return
-    final = compose_final_image(canvas.base_full, canvas.sensor_full, canvas.tdk_logo_full, positions_preview)
-    if final:
-        fp = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG Files", "*.png")])
-        if fp:
-            final.save(fp, dpi=(DPI, DPI))
-            messagebox.showinfo("Saved", f"Saved label to: {fp}")
 
-btn_save.config(command=save_label)
+    fp = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG Files", "*.png")])
+    if fp:
+        base_name = os.path.splitext(fp)[0]
+        fp1 = f"{base_name}_page1.png"
+        fp2 = f"{base_name}_page2.png"
 
-# Print
-def print_label():
-    if canvas.base_full is None:
-        messagebox.showwarning("No preview", "Generate the label first.")
+        canvas1.page1_full.save(fp1, dpi=(DPI, DPI))
+        canvas2.page2_full.save(fp2, dpi=(DPI, DPI))
+        messagebox.showinfo("Saved", f"Saved:\n{fp1}\n{fp2}")
+
+btn_save.config(command=save_labels)
+
+# ---- Print (with preview) ----
+def print_labels_preview():
+    if canvas1.page1_full is None or canvas2.page2_full is None:
+        messagebox.showwarning("No preview", "Generate the labels first.")
         return
-    
-    final = compose_final_image(canvas.base_full, canvas.sensor_full, canvas.tdk_logo_full, positions_preview)
-    if final:
-        try:
-            # Save the image to a temporary file
-            temp_dir = tempfile.gettempdir()
-            temp_path = os.path.join(temp_dir, "temp_label.png")
-            final.save(temp_path, dpi=(DPI, DPI))
-            
-            # Use os.startfile on Windows to print
-            if os.name == 'nt':  # Check if the OS is Windows
-                os.startfile(temp_path, "print")
-                #messagebox.showinfo("Print", "Label sent to default printer.")
-            else:
-                # Add cross-platform printing logic here if needed
-                messagebox.showerror("Error", "Printing is currently only supported on Windows.")
-        except Exception as e:
-            messagebox.showerror("Print Error", f"Could not print: {e}")
 
-btn_print.config(command=print_label)
+    try:
+        temp_dir = tempfile.gettempdir()
+        tiff_path = os.path.join(temp_dir, "tdk_labels.tiff")
 
-# Default Sensor ID
+        # Save both pages as a single multipage TIFF
+        canvas1.page1_full.save(
+            tiff_path,
+            format="TIFF",
+            save_all=True,
+            append_images=[canvas2.page2_full]
+        )
+
+        # Open with Windows Photo Print wizard
+        os.startfile(tiff_path, "print")
+
+    except Exception as e:
+        messagebox.showerror("Print Error", f"Could not print: {e}")
+
+btn_print_preview.config(command=print_labels_preview)
+
+# ---- Direct print to SATO CG408 ----
+def print_labels_direct():
+    s = entry.get().strip()
+    if not s:
+        messagebox.showwarning("No ID", "Please enter a Sensor ID first.")
+        return
+
+    try:
+        page1_full, _ = make_page1_image()
+        page2_full = make_page2_image(s)
+
+        # Send each page directly to the printer
+        printer_name = "SATO CG408"   # or whatever exact name appears in Control Panel > Printers
+        hprinter = win32print.OpenPrinter(printer_name)
+        hdc = win32ui.CreateDC()
+        hdc.CreatePrinterDC(printer_name)
+
+        # Page 1
+        dib1 = ImageWin.Dib(page1_full)
+        hdc.StartDoc("TDK Label Page 1")
+        hdc.StartPage()
+        dib1.draw(hdc.GetHandleOutput(), (0, 0, page1_full.size[0], page1_full.size[1]))
+        hdc.EndPage()
+
+        # Page 2
+        dib2 = ImageWin.Dib(page2_full)
+        hdc.StartPage()
+        dib2.draw(hdc.GetHandleOutput(), (0, 0, page2_full.size[0], page2_full.size[1]))
+        hdc.EndPage()
+
+        hdc.EndDoc()
+        hdc.DeleteDC()
+
+        messagebox.showinfo("✅ Printing", f"Label sent directly to printer:\n{printer_name}")
+
+    except Exception as e:
+        messagebox.showerror("Print Error", f"Direct print failed: {e}")
+
+btn_print_direct.config(command=print_labels_direct)
+
+# ---- Default state ----
 entry.insert(0, "12-23-12345-123456")
 update_preview()
 
