@@ -262,7 +262,7 @@ def print_labels_preview():
             tiff_path,
             format="TIFF",
             save_all=True,
-            append_images=[canvas2.page2_full]
+            append_images=[canvasx]
         )
 
         # Open with Windows Photo Print wizard
