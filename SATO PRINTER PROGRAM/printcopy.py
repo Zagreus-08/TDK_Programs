@@ -43,7 +43,7 @@ canvas_items_page2 = {
 
 _global_images = {}
 
-# ---- Pillow resample mode ----
+
 try:
     RESAMPLE = Image.Resampling.LANCZOS
 except AttributeError:
