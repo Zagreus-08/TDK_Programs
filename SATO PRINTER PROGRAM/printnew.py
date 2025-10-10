@@ -137,7 +137,7 @@ btn_frame = tk.Frame(root)
 btn_frame.pack(pady=5)
 
 btn_preview = tk.Button(btn_frame, text="Generate Label Preview", bg="lightgreen")
-btn_preview.pack(side=tk.LEFT, padx=5)
+btn_preview.pack(pady=10)
 
 btn_save = tk.Button(btn_frame, text="Save Both Labels", bg="lightblue")
 btn_save.pack(side=tk.LEFT, padx=5)
@@ -166,8 +166,8 @@ def generate_new_label():
 canvas_frame = tk.Frame(root)
 canvas_frame.pack(pady=10)
 
-tk.Label(canvas_frame, text="Page 1: Info", font=("Arial", 10, "bold")).grid(row=0, column=0, padx=5)
-tk.Label(canvas_frame, text="Page 2: QR + ID", font=("Arial", 10, "bold")).grid(row=0, column=1, padx=5)
+tk.Label(canvas_frame, text="TDK Logo", font=("Arial", 10, "bold")).grid(row=0, column=0, padx=5)
+tk.Label(canvas_frame, text="Sensor Label", font=("Arial", 10, "bold")).grid(row=0, column=1, padx=5)
 
 canvas1 = tk.Canvas(canvas_frame, width=PREVIEW_W + 10, height=PREVIEW_H + 10, bg="grey")
 canvas1.grid(row=1, column=0, padx=5)
