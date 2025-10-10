@@ -134,7 +134,7 @@ entry.pack(pady=5)
 
 # ---- Button Row (on top, like before) ----
 btn_frame = tk.Frame(root)
-btn_frame.pack(pady=5)
+btn_frame.pack(pady=10)
 
 btn_preview = tk.Button(btn_frame, text="Generate Label Preview", bg="lightgreen")
 btn_preview.pack(pady=10)
