@@ -136,7 +136,7 @@ entry.pack(pady=5)
 btn_frame = tk.Frame(root)
 btn_frame.pack(pady=10)
 
-btn_preview = tk.Button(btn_frame, text="Generate Label Preview", bg="lightgreen")
+btn_preview = tk.Button(btn_frame, text="Generate Labels Preview", bg="lightgreen")
 btn_preview.pack(pady=10)
 
 btn_save = tk.Button(btn_frame, text="Save Both Labels", bg="lightblue")
@@ -147,7 +147,6 @@ btn_print_preview.pack(side=tk.LEFT, padx=5)
 
 btn_print_direct = tk.Button(btn_frame, text="Direct Print", bg="orange")
 btn_print_direct.pack(side=tk.LEFT, padx=5)
-
 # (Hidden) Generate New Label Button — you can unhide later if needed
 def generate_new_label():
     part1 = random.randint(10, 99)
