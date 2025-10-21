@@ -35,11 +35,11 @@ zmin = -0.4
 zmax = 0.4
 
 # Import Migne image
-im_Migne = plt.imread(r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program\Migne_black_frameless.png")
+im_Migne = plt.imread('Migne_black_frameless.png')
 
 # Serial initialization
 try:
-    ser = serial.Serial("COM6", 115200, timeout=1)
+    ser = serial.Serial("COM16", 115200, timeout=1)
 except serial.SerialException as e:
     print(f"Error: Could not open serial port.\n{str(e)}")
     ser = None
@@ -50,7 +50,6 @@ def save_figures(queue):
         fig, filename = queue.get()
         if fig is None:
             break
-        fig.savefig(filename)
 
 queue = Queue()
 saving_process = Process(target=save_figures, args=(queue,))
@@ -118,7 +117,7 @@ def initialize_blank_plot():
     ax.set_xlim([0, 100])
     ax.set_ylim([0, 100])
     
-    axh.view_init(elev=20, azim=225)
+    axh.view_init(elev=20, azim=300)
     axh.set_box_aspect((5, 5, 3.5))
     axh.set_xlabel('x')
     axh.set_ylabel('y')
@@ -166,7 +165,7 @@ def update(i, xt, yt, zt, zmin, zmax):
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.5)
 
-    axh.view_init(elev=20, azim=225)
+    axh.view_init(elev=20, azim=300)
     axh.set_box_aspect((5, 5, 2))
     axh.mouse_init(rotate_btn=None)
 
