@@ -102,15 +102,15 @@ def initialize_blank_plot():
     axh.cla()
     
     ax.grid(True, linestyle='--', alpha=0.7)
-    ax.set_xticks(np.arange(0, 101, 10))
-    ax.set_yticks(np.arange(0, 101, 10))
+    ax.set_xticks(np.arange(0, 101, 20))
+    ax.set_yticks(np.arange(0, 101, 20))
     ax.set_facecolor('white')
     
-    axh.grid(True, linestyle='-', alpha=0.2)
+    axh.grid(True, linestyle='-', alpha=0.7)
     axh.set_xticks(np.arange(0, 101, 20))
-    axh.set_yticks(np.arange(0, 101, 20))
+    axh.set_yticks(np.arange(0, 101, 25))
     axh.set_zticks(np.arange(-0.4, 0.41, 0.2))
-    axh.set_facecolor('white')
+    axh.set_facecolor('none')
     
     ax.set_xlabel('x')
     ax.set_ylabel('y')
@@ -119,7 +119,7 @@ def initialize_blank_plot():
     ax.set_ylim([0, 100])
     
     axh.view_init(elev=20, azim=225)
-    axh.set_box_aspect((5, 5, 2))
+    axh.set_box_aspect((5, 5, 3.5))
     axh.set_xlabel('x')
     axh.set_ylabel('y')
     axh.set_zlabel('output')
@@ -214,10 +214,10 @@ axm = fig.add_subplot(spec[0, 0:])
 divider = make_axes_locatable(ax)
 cax = divider.append_axes("right", size="5%", pad=0.5)
 
-# Adjust subplot spacing
-fig.subplots_adjust(left=0.05, right=0.95, 
-                   bottom=0.05, top=0.95,
-                   hspace=0.2, wspace=0.2)
+# Adjust subplot spacing for smaller display
+fig.subplots_adjust(left=0.08, right=0.92, 
+                   bottom=0.08, top=0.92,
+                   hspace=0.25, wspace=0.25)  # Tighter spacing
 
 # Initialize with blank plot
 initialize_blank_plot()
