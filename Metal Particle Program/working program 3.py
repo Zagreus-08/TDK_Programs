@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Scan system for long loop - Auto-start version (Fullscreen + Fixed System Controls)
-Ver 0.9R-stable5    2025-10-25
+Scan system for long loop - Auto-start version (Fullscreen + Toggleable Controls)
+Ver 0.9R-stable7    2025-10-27
 """
 
 import copy
@@ -118,16 +118,19 @@ def initialize_blank_plot():
 
     ax.set_xlabel("x")
     ax.set_ylabel("y")
-    ax.set_title("Foreign object detection")
     ax.set_xlim([0, 100])
     ax.set_ylim([0, 100])
+
+    # ---- align both titles at same Y level ----
+    y_title = 1.02
+    ax.set_title("Foreign object detection", fontsize=16, color=(0.2, 0.2, 0.2), y=y_title)
+    axh.set_title("Foreign object detection (3D)", fontsize=16, color=(0.2, 0.2, 0.2), y=y_title)
 
     axh.view_init(elev=20, azim=300)
     axh.set_box_aspect((5, 5, 3.5))
     axh.set_xlabel("x")
     axh.set_ylabel("y")
     axh.set_zlabel("output")
-    axh.set_title("Foreign object detection (3D)")
     axh.set_xlim([0, 100])
     axh.set_ylim([0, 100])
     axh.set_zlim([zmin, zmax])
@@ -195,28 +198,37 @@ def update(i, xt, yt, zt, zmin, zmax):
     axh.set_xlabel("x")
     axh.set_ylabel("y")
     axh.set_zlabel("output")
-    axh.set_title("Foreign object detection (3D)", fontsize=16, color=(0.2, 0.2, 0.2))
-    ax.set_facecolor((0.92, 0.92, 0.92))
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_title("Foreign object detection", fontsize=16, color=(0.2, 0.2, 0.2))
+
+    # keep same title Y level
+    y_title = 1.02
+    ax.set_title("Foreign object detection", fontsize=16, color=(0.2, 0.2, 0.2), y=y_title)
+    axh.set_title("Foreign object detection (3D)", fontsize=16, color=(0.2, 0.2, 0.2), y=y_title)
 
 # ---------------- GUI setup ----------------
 th_ser = threading.Thread(target=read_loop, daemon=True)
 th_ser.start()
 
 root = tk.Tk()
-root.title("Scan system ver.0.9R-stable5")
+root.title("Scan system ver.0.9R-stable7")
 root.configure(bg="#e5e5e5")
-
-# 🚀 Fullscreen setup for Raspberry Pi monitor
 root.attributes("-fullscreen", True)
-root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))  # press ESC to exit fullscreen
+root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
 
 main_frame = tk.Frame(root, bg="#e5e5e5")
 main_frame.pack(fill=tk.BOTH, expand=True)
+main_frame.grid_rowconfigure(0, weight=1)
+main_frame.grid_columnconfigure(0, weight=1)
+main_frame.grid_columnconfigure(1, weight=0)
 
-# create figure
+# Plot frame
+plot_frame = tk.Frame(main_frame, bg="#e5e5e5")
+plot_frame.grid(row=0, column=0, sticky="nsew")
+
+# Controls frame
+controls_frame = tk.Frame(main_frame, bg="#d9d9d9", padx=6, pady=6, relief="ridge", bd=3)
+controls_frame.grid(row=0, column=1, sticky="ns")
+
+# Create figure
 fig = plt.Figure(figsize=[13, 6], facecolor=(0.9, 0.9, 0.9))
 spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
 ax = fig.add_subplot(spec[1:, 0])
@@ -227,45 +239,25 @@ cax = divider.append_axes("right", size="5%", pad=0.5)
 fig.subplots_adjust(left=0.08, right=0.92, bottom=0.08, top=0.92, hspace=0.25, wspace=0.25)
 initialize_blank_plot()
 
-# embed in Tk
-canvas = FigureCanvasTkAgg(fig, master=main_frame)
+canvas = FigureCanvasTkAgg(fig, master=plot_frame)
 canvas_widget = canvas.get_tk_widget()
-canvas_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+canvas_widget.pack(fill=tk.BOTH, expand=True)
 
-# hidden toolbar (functional only)
 hidden_toolbar = NavigationToolbar2Tk(canvas, root)
 hidden_toolbar.pack_forget()
 
-# ---------------- System Controls (Right Panel, Toggle Version) ----------------
-controls_frame = tk.Frame(main_frame, bg="#d9d9d9", padx=6, pady=6)
-controls_frame.pack(side=tk.RIGHT, fill=tk.Y)
-
+# ---------------- Control buttons ----------------
 btn_style = {
     "font": ("Arial", 11, "bold"),
     "bg": "#f2f2f2",
-    "width": 15,
-    "height": 2,
+    "width": 14,
+    "height": 1,
     "relief": "raised",
 }
 
-anim_paused = False
-panel_expanded = True  # start expanded
-
-def pause_animation():
-    global anim_paused
-    if not anim_paused:
-        ani.event_source.stop()
-        anim_paused = True
-
-def resume_animation():
-    global anim_paused
-    if anim_paused:
-        ani.event_source.start()
-        anim_paused = False
-
 def safe_action(func):
-    pause_animation()
-    root.after(200, lambda: (func(), resume_animation()))
+    ani.event_source.stop()
+    root.after(200, lambda: (func(), ani.event_source.start()))
 
 def do_home(): safe_action(hidden_toolbar.home)
 def do_pan(): safe_action(hidden_toolbar.pan)
@@ -279,7 +271,6 @@ def do_shutdown():
         os.system("sudo shutdown now")
 def do_exit():
     if messagebox.askyesno("Exit", "Close the program?"):
-        pause_animation()
         try: ser.close()
         except: pass
         queue.put(None)
@@ -287,56 +278,35 @@ def do_exit():
         root.destroy()
         sys.exit(0)
 
-# --- toggle between compact (emoji only) and expanded (emoji + text) ---
+buttons = [
+    ("🏠 Home", do_home),
+    ("✋ Pan", do_pan),
+    ("🔍 Zoom", do_zoom),
+    ("💾 Save", do_save),
+    ("🔄 Reboot", do_reboot),
+    ("⏻ Shutdown", do_shutdown),
+    ("❌ Exit", do_exit),
+]
+
+for text, cmd in buttons:
+    tk.Button(controls_frame, text=text, command=cmd, **btn_style).pack(pady=4, fill=tk.X)
+
+# Toggle button to hide/show controls
 def toggle_controls():
-    global panel_expanded
-    panel_expanded = not panel_expanded
-    for widget in controls_frame.winfo_children():
-        if widget != toggle_btn:
-            widget.destroy()
-    rebuild_controls()
-
-def rebuild_controls():
-    if panel_expanded:
-        controls_frame.config(width=180)
-        buttons = [
-            ("🏠 Home", do_home),
-            ("✋ Pan", do_pan),
-            ("🔍 Zoom", do_zoom),
-            ("💾 Save", do_save),
-            ("🔄 Reboot", do_reboot),
-            ("⏻ Shutdown", do_shutdown),
-            ("❌ Exit", do_exit),
-        ]
+    if controls_frame.winfo_viewable():
+        controls_frame.grid_remove()
     else:
-        controls_frame.config(width=70)
-        buttons = [
-            ("🏠", do_home),
-            ("✋", do_pan),
-            ("🔍", do_zoom),
-            ("💾", do_save),
-            ("🔄", do_reboot),
-            ("⏻", do_shutdown),
-            ("❌", do_exit),
-        ]
-    for text, cmd in buttons:
-        b = tk.Button(controls_frame, text=text, command=cmd, **btn_style)
-        if not panel_expanded:
-            b.config(width=4, font=("Arial", 14, "bold"))
-        b.pack(pady=5, fill=tk.X)
+        controls_frame.grid()
+    root.update_idletasks()
 
-# --- toggle button (gear icon) ---
 toggle_btn = tk.Button(
-    controls_frame, text="⚙️", font=("Arial", 14, "bold"),
-    bg="#cccccc", relief="raised", width=4, height=2,
+    root, text="⚙️", font=("Arial", 14, "bold"),
+    bg="#cccccc", relief="raised", width=3, height=1,
     command=toggle_controls
 )
-toggle_btn.pack(pady=(0, 8))
+toggle_btn.place(x=10, y=10)
 
-rebuild_controls()
-
-
-# start animation
+# ---------------- Animation ----------------
 xt, yt, zt = [], [], []
 ani = animation.FuncAnimation(fig, update, fargs=(xt, yt, zt, zmin, zmax),
                               interval=250, cache_frame_data=False, save_count=100)

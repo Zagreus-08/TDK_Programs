@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Scan system for long loop - Auto-start version (Fullscreen + Fixed System Controls)
-Ver 0.9R-stable5    2025-10-25
+Scan system for long loop - Auto-start version (Fullscreen + Fixed System Controls + Border)
+Ver 0.9R-stable6    2025-10-25
 """
 
 import copy
@@ -32,12 +32,12 @@ zmin, zmax = -0.4, 0.4
 
 # ---------------- Image ----------------
 im_Migne = plt.imread(
-    r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program\Migne_black_frameless.png"
+    '/home/pi/Migne_black_frameless.png'
 )
 
 # ---------------- Serial ----------------
 try:
-    ser = serial.Serial("COM7", 115200, timeout=1)
+    ser = serial.Serial("/dev/ttyUSB0", 115200, timeout=1)
 except serial.SerialException as e:
     print(f"Error: Could not open serial port.\n{str(e)}")
     ser = None
@@ -206,17 +206,22 @@ th_ser = threading.Thread(target=read_loop, daemon=True)
 th_ser.start()
 
 root = tk.Tk()
-root.title("Scan system ver.0.9R-stable5")
-root.configure(bg="#e5e5e5")
+root.title("Scan system ver.0.9R-stable6")
+root.configure(bg="#1e1e1e")
 
-# 🚀 Fullscreen setup for Raspberry Pi monitor
+# === Fullscreen and Border ===
 root.attributes("-fullscreen", True)
-root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))  # press ESC to exit fullscreen
+root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
 
-main_frame = tk.Frame(root, bg="#e5e5e5")
+# Outer border frame (margin)
+border_frame = tk.Frame(root, bg="#1e1e1e", padx=6, pady=6)
+border_frame.pack(fill=tk.BOTH, expand=True)
+
+# Main container frame
+main_frame = tk.Frame(border_frame, bg="#e5e5e5")
 main_frame.pack(fill=tk.BOTH, expand=True)
 
-# create figure
+# Create figure and embed
 fig = plt.Figure(figsize=[13, 6], facecolor=(0.9, 0.9, 0.9))
 spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
 ax = fig.add_subplot(spec[1:, 0])
@@ -227,29 +232,22 @@ cax = divider.append_axes("right", size="5%", pad=0.5)
 fig.subplots_adjust(left=0.08, right=0.92, bottom=0.08, top=0.92, hspace=0.25, wspace=0.25)
 initialize_blank_plot()
 
-# embed in Tk
 canvas = FigureCanvasTkAgg(fig, master=main_frame)
 canvas_widget = canvas.get_tk_widget()
 canvas_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-# hidden toolbar (functional only)
-hidden_toolbar = NavigationToolbar2Tk(canvas, root)
+# Use a hidden toolbar safely (no pack conflict)
+hidden_toolbar = NavigationToolbar2Tk(canvas, main_frame)
 hidden_toolbar.pack_forget()
 
-# ---------------- System Controls (Right Panel, Toggle Version) ----------------
+# ---------------- System Controls ----------------
 controls_frame = tk.Frame(main_frame, bg="#d9d9d9", padx=6, pady=6)
 controls_frame.pack(side=tk.RIGHT, fill=tk.Y)
 
-btn_style = {
-    "font": ("Arial", 11, "bold"),
-    "bg": "#f2f2f2",
-    "width": 15,
-    "height": 2,
-    "relief": "raised",
-}
+btn_style = {"font": ("Arial", 11, "bold"), "bg": "#f2f2f2", "width": 15, "height": 2, "relief": "raised"}
 
 anim_paused = False
-panel_expanded = True  # start expanded
+panel_expanded = True
 
 def pause_animation():
     global anim_paused
@@ -287,7 +285,6 @@ def do_exit():
         root.destroy()
         sys.exit(0)
 
-# --- toggle between compact (emoji only) and expanded (emoji + text) ---
 def toggle_controls():
     global panel_expanded
     panel_expanded = not panel_expanded
@@ -325,7 +322,6 @@ def rebuild_controls():
             b.config(width=4, font=("Arial", 14, "bold"))
         b.pack(pady=5, fill=tk.X)
 
-# --- toggle button (gear icon) ---
 toggle_btn = tk.Button(
     controls_frame, text="⚙️", font=("Arial", 14, "bold"),
     bg="#cccccc", relief="raised", width=4, height=2,
@@ -335,8 +331,7 @@ toggle_btn.pack(pady=(0, 8))
 
 rebuild_controls()
 
-
-# start animation
+# ---------------- Animation ----------------
 xt, yt, zt = [], [], []
 ani = animation.FuncAnimation(fig, update, fargs=(xt, yt, zt, zmin, zmax),
                               interval=250, cache_frame_data=False, save_count=100)
