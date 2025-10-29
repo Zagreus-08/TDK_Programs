@@ -34,6 +34,7 @@ csv_writer = None
 current_filename = None
 pause_live = False       # used when user loads a CSV and wants to pause live updates
 scan_active = True       # True while an active scan is happening; becomes False after end-of-scan (100,100)
+last_data_time = time.time()  # Track when we last received serial data
 
 # ---------------- Image ----------------
 im_Migne = plt.imread(
@@ -115,12 +116,47 @@ def start_new_raw_file(name_hint=""):
 # ---------------- Button state control ----------------
 def set_controls_state(state):
     """Enable or disable Load Raw and Resume Live buttons"""
-    for btn in [load_btn, resume_btn]:
-        btn.config(state=state)
+    try:
+        print(f"[DEBUG] Setting button state to: {state}")
+        for btn in [load_btn, resume_btn]:
+            btn.config(state=state)
+        print(f"[DEBUG] Buttons successfully set to: {state}")
+    except NameError as e:
+        print(f"[DEBUG] Buttons not created yet: {e}")
+    except Exception as e:
+        print(f"[ERROR] Failed to set button state: {e}")
+
+def check_serial_timeout():
+    """Check if serial data has stopped coming and re-enable buttons if needed"""
+    global scan_active, last_data_time
+    
+    try:
+        current_time = time.time()
+        time_since_last_data = current_time - last_data_time
+        
+        # Debug print every 5 seconds
+        if int(current_time) % 5 == 0:
+            print(f"[DEBUG] scan_active: {scan_active}, time_since_last_data: {time_since_last_data:.1f}s")
+        
+        # Check timeout condition: scan is active AND (no serial OR timeout reached)
+        if scan_active and (ser is None or time_since_last_data > 3.0):
+            print(f"[INFO] Timeout reached ({time_since_last_data:.1f}s), re-enabling buttons")
+            scan_active = False
+            set_controls_state("normal")
+        
+        # Schedule next check
+        root.after(1000, check_serial_timeout)  # Check every 1 second
+    except Exception as e:
+        print(f"[ERROR] check_serial_timeout: {e}")
+        # Try to schedule next check anyway
+        try:
+            root.after(1000, check_serial_timeout)
+        except:
+            pass
 
 # ---------------- Serial loop ----------------
 def read_loop():
-    global raw_file, csv_writer, current_filename, scan_active
+    global raw_file, csv_writer, current_filename, scan_active, last_data_time
     data_cnt = 0
     filename_from_serial = ""
 
@@ -142,6 +178,10 @@ def read_loop():
             x0 = float(parts[0])
             y0 = float(parts[1])
             z0 = float(parts[2])
+            
+            # Update last data received time
+            last_data_time = time.time()
+            
         except (ValueError, IndexError):
             print("data error @count=", data_cnt)
             continue
@@ -196,10 +236,27 @@ def read_loop():
         if x0 == 100 and y0 == 100:
             try:
                 if filename_from_serial:
-                    queue.put((fig, os.path.join(
-                        r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program",
-                        filename_from_serial + ".png")))
-                print(f"[INFO] Scan complete, saved image {filename_from_serial}.png")
+                    # Use same path logic as load_raw_data function
+                    possible_paths = [
+                        "/home/pi/Desktop/Metal Particle Program",
+                        "/home/pi/Desktop", 
+                        "/home/pi",
+                        os.path.join(os.path.expanduser("~"), "Desktop", "Metal Particle Program"),
+                        os.path.join(os.path.expanduser("~"), "Desktop"),
+                        r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program"
+                    ]
+                    
+                    save_dir = os.getcwd()  # Default fallback
+                    
+                    # Find the first existing path
+                    for path in possible_paths:
+                        if os.path.exists(path):
+                            save_dir = path
+                            break
+                    
+                    save_path = os.path.join(save_dir, filename_from_serial + ".png")
+                    queue.put((fig, save_path))
+                    print(f"[INFO] Scan complete, saved image to: {save_path}")
             except Exception as e:
                 print("[ERROR] Could not save image:", e)
 
@@ -493,7 +550,7 @@ canvas_widget.pack(fill=tk.BOTH, expand=True)
 hidden_toolbar = NavigationToolbar2Tk(canvas, root)
 hidden_toolbar.pack_forget()
 
-btn_style = {"font": ("Arial", 11, "bold"), "bg": "#f2f2f2", "width": 14, "height": 1, "relief": "raised"}
+btn_style = {"font": ("Arial", 11, "bold"), "bg": "#f2f2f2", "width": 10, "height": 2, "relief": "raised"}
 
 def safe_action(func):
     ani.event_source.stop()
@@ -502,7 +559,69 @@ def safe_action(func):
 def do_home(): safe_action(hidden_toolbar.home)
 def do_pan(): safe_action(hidden_toolbar.pan)
 def do_zoom(): safe_action(hidden_toolbar.zoom)
-def do_save(): safe_action(hidden_toolbar.save_figure)
+def do_save(): 
+    def custom_save():
+        # Use same path logic as load_raw_data function
+        possible_paths = [
+            "/home/pi/Desktop/Metal Particle Program",
+            "/home/pi/Desktop", 
+            "/home/pi/raw data",
+            os.path.join(os.path.expanduser("~"), "Desktop", "Metal Particle Program"),
+            os.path.join(os.path.expanduser("~"), "Desktop"),
+            r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program"
+        ]
+        
+        save_dir = os.getcwd()  # Default fallback
+        
+        # Find the first existing path
+        for path in possible_paths:
+            if os.path.exists(path):
+                save_dir = path
+                break
+        
+        # Use tkinter file dialog with the determined directory
+        from tkinter import filedialog
+        filename = filedialog.asksaveasfilename(
+            title="Save Figure",
+            defaultextension=".png",
+            filetypes=[
+                ("PNG files", "*.png"),
+                ("PDF files", "*.pdf"),
+                ("SVG files", "*.svg"),
+                ("All files", "*.*")
+            ],
+            initialdir=save_dir
+        )
+        
+        if filename:
+            try:
+                # Save at exactly 800x373 pixels
+                # Calculate figure size in inches for exact pixel output
+                width_inches = 800 / 100  # 8 inches at 100 DPI = 800 pixels
+                height_inches = 373 / 100  # 3.73 inches at 100 DPI = 373 pixels
+                
+                # Store original size
+                original_size = fig.get_size_inches()
+                
+                # Temporarily set exact size for saving
+                fig.set_size_inches(width_inches, height_inches)
+                fig.savefig(filename, dpi=100, bbox_inches=None, facecolor='white', edgecolor='none')
+                
+                # Immediately restore original size
+                fig.set_size_inches(original_size)
+                canvas.draw()  # Refresh the display
+                
+                print(f"[INFO] Figure saved to: {filename} at 800x373 pixels")
+            except Exception as e:
+                print(f"[ERROR] Failed to save figure: {e}")
+                # Make sure to restore size even if save fails
+                try:
+                    fig.set_size_inches(13, 6)
+                    canvas.draw()
+                except:
+                    pass
+    
+    safe_action(custom_save)
 def do_reboot():
     if messagebox.askyesno("Reboot", "Reboot the system?"):
         os.system("sudo reboot")
@@ -522,23 +641,27 @@ def do_exit():
 
 # ---------------- Buttons ----------------
 buttons = [
-    ("📂 Load Raw File", load_raw_data),
-    ("▶ Resume Live", resume_live),
-    ("🔄 Reboot", do_reboot),
-    ("⏻ Shutdown", do_shutdown),
-    ("❌ Exit", do_exit),
+    ("Load Raw File", load_raw_data),
+    ("Live Scan", resume_live),
+    ("Save", do_save),
+    ("Reboot", do_reboot),
+    ("Shutdown", do_shutdown),
+    ("Exit", do_exit),
 ]
 
 for text, cmd in buttons:
     b = tk.Button(controls_frame, text=text, command=cmd, **btn_style)
     b.pack(pady=4, fill=tk.X)
-    if text == "📂 Load Raw File":
+    if text == "Load Raw File":
         load_btn = b
-    if text == "▶ Resume Live":
+    if text == "Live Scan":
         resume_btn = b
 
 # Initially enabled (buttons start enabled when no scan is active)
 set_controls_state("normal")
+
+# Start the serial timeout checker
+root.after(1000, check_serial_timeout)
 
 def toggle_controls():
     if controls_frame.winfo_viewable():
