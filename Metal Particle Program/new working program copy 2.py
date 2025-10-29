@@ -18,7 +18,6 @@ from mpl_toolkits.mplot3d import Axes3D
 from scipy.interpolate import griddata
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from multiprocessing import Process, Queue
 import threading
 import serial
 import time
@@ -32,6 +31,7 @@ zmin, zmax = -0.1, 0.1
 raw_file = None
 csv_writer = None
 current_filename = None
+loaded_filename = None   # Track filename of loaded raw data for saving
 pause_live = False       # used when user loads a CSV and wants to pause live updates
 scan_active = True       # True while an active scan is happening; becomes False after end-of-scan (100,100)
 last_data_time = time.time()  # Track when we last received serial data
@@ -76,20 +76,32 @@ if ser is None:
     # Don't exit, allow program to run without serial connection
 
 # ---------------- Save figures ----------------
-def save_figures(queue):
-    while True:
-        item = queue.get()
-        if item is None:
-            break
-        fig_obj, filename = item
+def save_figure_direct(filename):
+    """Save the current figure directly (no multiprocessing)"""
+    try:
+        # Save at exactly 800x373 pixels
+        width_inches = 800 / 100
+        height_inches = 373 / 100
+        
+        # Store original size
+        original_size = fig.get_size_inches()
+        
+        # Temporarily set exact size for saving
+        fig.set_size_inches(width_inches, height_inches)
+        fig.savefig(filename, dpi=100, bbox_inches=None, facecolor='white', edgecolor='none')
+        
+        # Restore original size
+        fig.set_size_inches(original_size)
+        
+        print(f"[INFO] Figure saved successfully to: {filename}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Failed to save figure: {e}")
         try:
-            fig_obj.savefig(filename)
-        except Exception as e:
-            print("Failed to save figure:", e)
-
-queue = Queue()
-saving_process = Process(target=save_figures, args=(queue,))
-saving_process.start()
+            fig.set_size_inches(original_size)
+        except:
+            pass
+        return False
 
 # ---------------- Raw Data Handling ----------------
 def start_new_raw_file(name_hint=""):
@@ -156,7 +168,7 @@ def check_serial_timeout():
 
 # ---------------- Serial loop ----------------
 def read_loop():
-    global raw_file, csv_writer, current_filename, scan_active, last_data_time
+    global raw_file, csv_writer, current_filename, scan_active, last_data_time, pause_live
     data_cnt = 0
     filename_from_serial = ""
 
@@ -165,12 +177,10 @@ def read_loop():
             time.sleep(1)  # Sleep and continue if no serial connection
             continue
 
-        if pause_live:
-            time.sleep(0.2)
-            continue
-
         rcv_data = ser.readline()
         if len(rcv_data) == 0:
+            if pause_live:
+                time.sleep(0.2)
             continue
 
         try:
@@ -186,11 +196,23 @@ def read_loop():
             print("data error @count=", data_cnt)
             continue
 
+        # ---------- Auto-resume live scan when data received while paused ----------
+        if pause_live:
+            print("[INFO] Serial data received while viewing loaded data. Auto-resuming live scan.")
+            pause_live = False
+            x.clear()
+            y.clear()
+            z.clear()
+            scan_active = True
+            filename_from_serial = ""
+            # Reset plot to blank and disable buttons
+            root.after(0, lambda: (resume_live(), set_controls_state("disabled")))
+
         # Detect filename sent by 1st program (captured once per scan)
         if len(parts) >= 4 and not filename_from_serial:
             filename_from_serial = parts[3].strip()
             start_new_raw_file(filename_from_serial)
-
+        
         # ---------- New scan detection ----------
         if x0 == 0 and y0 == 0:
             if len(x) > 0 or not scan_active:
@@ -255,8 +277,9 @@ def read_loop():
                             break
                     
                     save_path = os.path.join(save_dir, filename_from_serial + ".png")
-                    queue.put((fig, save_path))
-                    print(f"[INFO] Scan complete, saved image to: {save_path}")
+                    print(f"[INFO] Scan complete, attempting to save to: {save_path}")
+                    # Save directly in main thread using root.after to ensure thread safety
+                    root.after(0, lambda: save_figure_direct(save_path))
             except Exception as e:
                 print("[ERROR] Could not save image:", e)
 
@@ -391,7 +414,7 @@ def update(i, xt, yt, zt, zmin, zmax):
 
 # ---------------- Load Raw CSV ----------------
 def load_raw_data():
-    global pause_live
+    global pause_live, loaded_filename
     pause_live = True
     
     # Set initial directory - try multiple possible paths for Raspberry Pi
@@ -425,12 +448,20 @@ def load_raw_data():
         pause_live = False
         return
     try:
+        # Extract filename without extension for saving
+        loaded_filename = os.path.splitext(os.path.basename(file_path))[0]
+        # Remove "raw_" prefix if present
+        if loaded_filename.startswith("raw_"):
+            loaded_filename = loaded_filename[4:]
+        
         data = np.loadtxt(file_path, delimiter=",", skiprows=1)
         xs, ys, zs = data[:, 0], data[:, 1], data[:, 2]
         show_loaded(xs, ys, zs)
+        print(f"[INFO] Loaded file: {loaded_filename}")
     except Exception as e:
         messagebox.showerror("Error", f"Failed to load file:\n{e}")
         pause_live = False
+        loaded_filename = None
 
 def show_loaded(xs, ys, zs):
     global zmin, zmax, ax, axh, axm, cax
@@ -469,6 +500,10 @@ def show_loaded(xs, ys, zs):
     axh.set_ylim([0, 100])
     axh.set_zlim([zmin, zmax])
     
+    # Display Z min/max values on the 3D plot
+    axh.text2D(0.70, 0.95, f"Z Max: {zmax:.6f}", transform=axh.transAxes)
+    axh.text2D(0.70, 0.90, f"Z Min: {zmin:.6f}", transform=axh.transAxes)
+    
     # Handle pane properties for Raspberry Pi compatibility
     try:
         axh.xaxis.pane.fill = False
@@ -483,6 +518,10 @@ def show_loaded(xs, ys, zs):
 
     ax.set_xlim([0, 100])
     ax.set_ylim([0, 100])
+    
+    axh.set_xlabel("x")
+    axh.set_ylabel("y")
+    axh.set_zlabel("output")
 
     ax.set_title("Loaded Raw Data (2D)", fontsize=16, y=1.05)
     axh.set_title("Loaded Raw Data (3D)", fontsize=16, y=1.06)
@@ -490,8 +529,9 @@ def show_loaded(xs, ys, zs):
 
 def resume_live():
     """Reset the plot to blank display and clear all data"""
-    global pause_live, x, y, z, zmin, zmax, ax, axh, axm, cax
+    global pause_live, x, y, z, zmin, zmax, ax, axh, axm, cax, loaded_filename
     pause_live = False
+    loaded_filename = None  # Clear loaded filename when resuming live
     # Clear all data buffers
     x.clear()
     y.clear()
@@ -511,89 +551,95 @@ def resume_live():
     initialize_blank_plot()
     canvas.draw()
 
-# ---------------- GUI setup ----------------
-th_ser = threading.Thread(target=read_loop, daemon=True)
-th_ser.start()
+# ---------------- Main execution ----------------
+if __name__ == '__main__':
+    # GUI setup
+    th_ser = threading.Thread(target=read_loop, daemon=True)
+    th_ser.start()
 
-root = tk.Tk()
-root.title("Scan system ver.0.9R-stable9")
-root.configure(bg="#e5e5e5")
-root.attributes("-fullscreen", True)
-root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
+    root = tk.Tk()
+    root.title("Scan system ver.0.9R-stable9")
+    root.configure(bg="#e5e5e5")
+    root.attributes("-fullscreen", True)
+    root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
 
-main_frame = tk.Frame(root, bg="#e5e5e5")
-main_frame.pack(fill=tk.BOTH, expand=True)
-main_frame.grid_rowconfigure(0, weight=1)
-main_frame.grid_columnconfigure(0, weight=1)
-main_frame.grid_columnconfigure(1, weight=0)
+    main_frame = tk.Frame(root, bg="#e5e5e5")
+    main_frame.pack(fill=tk.BOTH, expand=True)
+    main_frame.grid_rowconfigure(0, weight=1)
+    main_frame.grid_columnconfigure(0, weight=1)
+    main_frame.grid_columnconfigure(1, weight=0)
 
-plot_frame = tk.Frame(main_frame, bg="#e5e5e5")
-plot_frame.grid(row=0, column=0, sticky="nsew")
+    plot_frame = tk.Frame(main_frame, bg="#e5e5e5")
+    plot_frame.grid(row=0, column=0, sticky="nsew")
 
-controls_frame = tk.Frame(main_frame, bg="#d9d9d9", padx=6, pady=6, relief="ridge", bd=3)
-controls_frame.grid(row=0, column=1, sticky="ns")
+    controls_frame = tk.Frame(main_frame, bg="#d9d9d9", padx=6, pady=6, relief="ridge", bd=3)
+    controls_frame.grid(row=0, column=1, sticky="ns")
 
-fig = plt.Figure(figsize=[13, 6], facecolor=(0.9, 0.9, 0.9))
-spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
-ax = fig.add_subplot(spec[1:, 0])
-axh = fig.add_subplot(spec[1:, 1], projection="3d")
-axm = fig.add_subplot(spec[0, 0:])
-divider = make_axes_locatable(ax)
-cax = divider.append_axes("right", size="5%", pad=0.5)
-fig.subplots_adjust(left=0.08, right=0.92, bottom=0.08, top=0.92, hspace=0.25, wspace=0.25)
-initialize_blank_plot()
+    fig = plt.Figure(figsize=[13, 6], facecolor=(0.9, 0.9, 0.9))
+    spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
+    ax = fig.add_subplot(spec[1:, 0])
+    axh = fig.add_subplot(spec[1:, 1], projection="3d")
+    axm = fig.add_subplot(spec[0, 0:])
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="5%", pad=0.5)
+    fig.subplots_adjust(left=0.08, right=0.92, bottom=0.08, top=0.92, hspace=0.25, wspace=0.25)
+    initialize_blank_plot()
 
-canvas = FigureCanvasTkAgg(fig, master=plot_frame)
-canvas_widget = canvas.get_tk_widget()
-canvas_widget.pack(fill=tk.BOTH, expand=True)
+    canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+    canvas_widget = canvas.get_tk_widget()
+    canvas_widget.pack(fill=tk.BOTH, expand=True)
 
-hidden_toolbar = NavigationToolbar2Tk(canvas, root)
-hidden_toolbar.pack_forget()
+    hidden_toolbar = NavigationToolbar2Tk(canvas, root)
+    hidden_toolbar.pack_forget()
 
-btn_style = {"font": ("Arial", 11, "bold"), "bg": "#f2f2f2", "width": 10, "height": 2, "relief": "raised"}
+    btn_style = {"font": ("Arial", 11, "bold"), "bg": "#f2f2f2", "width": 10, "height": 2, "relief": "raised"}
 
-def safe_action(func):
-    ani.event_source.stop()
-    root.after(200, lambda: (func(), ani.event_source.start()))
+    def safe_action(func):
+        ani.event_source.stop()
+        root.after(200, lambda: (func(), ani.event_source.start()))
 
-def do_home(): safe_action(hidden_toolbar.home)
-def do_pan(): safe_action(hidden_toolbar.pan)
-def do_zoom(): safe_action(hidden_toolbar.zoom)
-def do_save(): 
-    def custom_save():
-        # Use same path logic as load_raw_data function
-        possible_paths = [
-            "/home/pi/Desktop/Metal Particle Program",
-            "/home/pi/Desktop", 
-            "/home/pi/raw data",
-            os.path.join(os.path.expanduser("~"), "Desktop", "Metal Particle Program"),
-            os.path.join(os.path.expanduser("~"), "Desktop"),
-            r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program"
-        ]
-        
-        save_dir = os.getcwd()  # Default fallback
-        
-        # Find the first existing path
-        for path in possible_paths:
-            if os.path.exists(path):
-                save_dir = path
-                break
-        
-        # Use tkinter file dialog with the determined directory
-        from tkinter import filedialog
-        filename = filedialog.asksaveasfilename(
-            title="Save Figure",
-            defaultextension=".png",
-            filetypes=[
-                ("PNG files", "*.png"),
-                ("PDF files", "*.pdf"),
-                ("SVG files", "*.svg"),
-                ("All files", "*.*")
-            ],
-            initialdir=save_dir
-        )
-        
-        if filename:
+    def do_home(): safe_action(hidden_toolbar.home)
+    def do_pan(): safe_action(hidden_toolbar.pan)
+    def do_zoom(): safe_action(hidden_toolbar.zoom)
+    def do_save(): 
+        def custom_save():
+            global current_filename, loaded_filename
+            
+            # Determine filename based on current state
+            if loaded_filename:
+                # Use loaded filename (from raw data)
+                base_filename = loaded_filename
+            elif current_filename:
+                # Use current scan filename (from live scan)
+                base_filename = os.path.splitext(os.path.basename(current_filename))[0]
+                # Remove "raw_" prefix if present
+                if base_filename.startswith("raw_"):
+                    base_filename = base_filename[4:]
+            else:
+                # Fallback to timestamp if no filename available
+                base_filename = time.strftime("%Y%m%d_%H%M%S")
+            
+            # Determine save directory
+            possible_paths = [
+                "/home/pi/Desktop/Metal Particle Program",
+                "/home/pi/Desktop", 
+                "/home/pi",
+                os.path.join(os.path.expanduser("~"), "Desktop", "Metal Particle Program"),
+                os.path.join(os.path.expanduser("~"), "Desktop"),
+                r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program"
+            ]
+            
+            save_dir = os.getcwd()  # Default fallback
+            
+            # Find the first existing path
+            for path in possible_paths:
+                if os.path.exists(path):
+                    save_dir = path
+                    break
+            
+            # Create full filename path
+            filename = os.path.join(save_dir, f"{base_filename}.png")
+            
             try:
                 # Save at exactly 800x373 pixels
                 # Calculate figure size in inches for exact pixel output
@@ -612,71 +658,69 @@ def do_save():
                 canvas.draw()  # Refresh the display
                 
                 print(f"[INFO] Figure saved to: {filename} at 800x373 pixels")
+                messagebox.showinfo("Save Complete", f"Figure saved to:\n{filename}")
             except Exception as e:
                 print(f"[ERROR] Failed to save figure: {e}")
+                messagebox.showerror("Save Error", f"Failed to save figure:\n{e}")
                 # Make sure to restore size even if save fails
                 try:
-                    fig.set_size_inches(13, 6)
+                    fig.set_size_inches(original_size)
                     canvas.draw()
                 except:
                     pass
-    
-    safe_action(custom_save)
-def do_reboot():
-    if messagebox.askyesno("Reboot", "Reboot the system?"):
-        os.system("sudo reboot")
-def do_shutdown():
-    if messagebox.askyesno("Shutdown", "Shutdown the system?"):
-        os.system("sudo shutdown -h now")
-def do_exit():
-    if messagebox.askyesno("Exit", "Close the program?"):
-        try: ser.close()
-        except: pass
-        if raw_file:
-            raw_file.close()
-        queue.put(None)
-        saving_process.join()
-        root.destroy()
-        sys.exit(0)
+        
+        safe_action(custom_save)
+    def do_reboot():
+        if messagebox.askyesno("Reboot", "Reboot the system?"):
+            os.system("sudo reboot")
+    def do_shutdown():
+        if messagebox.askyesno("Shutdown", "Shutdown the system?"):
+            os.system("sudo shutdown -h now")
+    def do_exit():
+        if messagebox.askyesno("Exit", "Close the program?"):
+            try: ser.close()
+            except: pass
+            if raw_file:
+                raw_file.close()
+            root.destroy()
+            sys.exit(0)
 
-# ---------------- Buttons ----------------
-buttons = [
-    ("Load Raw File", load_raw_data),
-    ("Live Scan", resume_live),
-    ("Save", do_save),
-    ("Reboot", do_reboot),
-    ("Shutdown", do_shutdown),
-    ("Exit", do_exit),
-]
+    # ---------------- Buttons ----------------
+    buttons = [
+        ("Load Raw File", load_raw_data),
+        ("Live Scan", resume_live),
+        ("Save", do_save),
+        ("Reboot", do_reboot),
+        ("Shutdown", do_shutdown),
+        ("Exit", do_exit),
+    ]
 
-for text, cmd in buttons:
-    b = tk.Button(controls_frame, text=text, command=cmd, **btn_style)
-    b.pack(pady=4, fill=tk.X)
-    if text == "Load Raw File":
-        load_btn = b
-    if text == "Live Scan":
-        resume_btn = b
+    for text, cmd in buttons:
+        b = tk.Button(controls_frame, text=text, command=cmd, **btn_style)
+        b.pack(pady=4, fill=tk.X)
+        if text == "Load Raw File":
+            load_btn = b
+        if text == "Live Scan":
+            resume_btn = b
 
-# Initially enabled (buttons start enabled when no scan is active)
-set_controls_state("normal")
+    # Initially enabled (buttons start enabled when no scan is active)
+    set_controls_state("normal")
 
-# Start the serial timeout checker
-root.after(1000, check_serial_timeout)
+    # Start the serial timeout checker
+    root.after(1000, check_serial_timeout)
 
-def toggle_controls():
-    if controls_frame.winfo_viewable():
-        controls_frame.grid_remove()
-    else:
-        controls_frame.grid()
-    root.update_idletasks()
+    def toggle_controls():
+        if controls_frame.winfo_viewable():
+            controls_frame.grid_remove()
+        else:
+            controls_frame.grid()
+        root.update_idletasks()
 
-toggle_btn = tk.Button(root, text="⚙️", font=("Arial", 14, "bold"), bg="#cccccc", relief="raised", width=3, height=1, command=toggle_controls)
-toggle_btn.place(x=10, y=10)
+    toggle_btn = tk.Button(root, text="⚙️", font=("Arial", 14, "bold"), bg="#cccccc", relief="raised", width=3, height=1, command=toggle_controls)
+    toggle_btn.place(x=10, y=10)
 
-xt, yt, zt = [], [], []
-ani = animation.FuncAnimation(fig, update, fargs=(xt, yt, zt, zmin, zmax), interval=250, cache_frame_data=False, save_count=100)
+    xt, yt, zt = [], [], []
+    ani = animation.FuncAnimation(fig, update, fargs=(xt, yt, zt, zmin, zmax), interval=250, cache_frame_data=False, save_count=100)
 
-canvas.draw()
-root.mainloop()
-queue.put(None)
-saving_process.join()
+    canvas.draw()
+    root.mainloop()
