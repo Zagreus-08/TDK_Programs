@@ -2,15 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Scan system for long loop - Auto-start version (Fullscreen + Toggleable Controls)
-Ver 0.9R-stable10   2025-10-30  (with flexible X/Y auto-detection and optimization)
-
-FEATURES:
-- Auto-detects scan dimensions from hardware (X: 50-300, Y: auto-detected)
-- Saves raw CSV data for all scan sizes
-- Auto-saves PNG at end of scan
-- Loads and displays any size raw data (50x50 to 300x300)
-- Maintains square 2D display with proper axis scaling
-- Manual X-range adjustment via UI controls (+50/-50)
+Ver 0.9R-stable9   2025-10-28  (with automatic scan-reset and button state handling)
 """
 
 import copy
@@ -36,8 +28,6 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 # ---------------- Global vars ----------------
 x, y, z = [], [], []
 zmin, zmax = -0.1, 0.1
-x_range = 100  # Default X-axis range (adjustable from 50 to 300)
-y_max = 100    # Auto-detected Y-axis maximum from hardware
 raw_file = None
 csv_writer = None
 current_filename = None
@@ -218,72 +208,33 @@ def read_loop():
             # Reset plot to blank and disable buttons
             root.after(0, lambda: (resume_live(), set_controls_state("disabled")))
 
-        # ---------- New scan detection (0,0 marks start of scan) ----------
+        # Detect filename sent by 1st program (captured once per scan)
+        if len(parts) >= 4 and not filename_from_serial:
+            filename_from_serial = parts[3].strip()
+            start_new_raw_file(filename_from_serial)
+        
+        # ---------- New scan detection ----------
         if x0 == 0 and y0 == 0:
-            # Close previous scan's raw file if it exists
-            if raw_file:
-                try:
-                    raw_file.close()
-                    print(f"[INFO] Closed previous raw file: {current_filename}")
-                except Exception:
-                    pass
-            
-            # Clear buffers for new scan
-            if len(x) > 0:
+            if len(x) > 0 or not scan_active:
                 print("[INFO] New scan detected (0,0). Clearing buffers and starting fresh.")
                 x.clear()
                 y.clear()
                 z.clear()
-            
-            # Reset variables for new scan
-            raw_file = None
-            csv_writer = None
-            current_filename = None
-            filename_from_serial = ""
-            scan_active = True
-            
-            # Reset y_max and x_range for new scan
-            global y_max, x_range
-            y_max = 100
-            x_range = 100
-            
-            # Update UI label
-            try:
-                root.after(0, lambda: xlim_label.config(text=f"X-Lim: {x_range}"))
-            except:
-                pass
-            
-            # Disable Load/Resume buttons during scanning
-            root.after(0, lambda: set_controls_state("disabled"))
-            
-            # Detect filename sent by 1st program (should come with or after 0,0)
-            if len(parts) >= 4:
-                filename_from_serial = parts[3].strip()
-                start_new_raw_file(filename_from_serial)
-                print(f"[INFO] Started new scan with filename: {filename_from_serial}")
-        
-        # Detect filename if it comes after (0,0) - backup detection
-        elif len(parts) >= 4 and not filename_from_serial and scan_active:
-            filename_from_serial = parts[3].strip()
-            start_new_raw_file(filename_from_serial)
-            print(f"[INFO] Started raw file with filename: {filename_from_serial}")
-        
-        # Auto-detect X and Y axis maximums from incoming data
-        if x0 > 0 and x0 <= 300:  # Reasonable range check for X
-            detected_x_max = max(x0, x_range if x_range > 100 else 100)
-            # Auto-adjust x_range during live scan (round to nearest 50)
-            new_x_range = max(50, min(300, ((int(detected_x_max) + 49) // 50) * 50))
-            if new_x_range != x_range:
-                x_range = new_x_range
-                print(f"[INFO] Auto-adjusted x_range to: {x_range}")
-                # Update UI label
                 try:
-                    root.after(0, lambda: xlim_label.config(text=f"X-Lim: {x_range}"))
-                except:
+                    if raw_file:
+                        raw_file.close()
+                except Exception:
                     pass
-        
-        if y0 > 0 and y0 <= 300:  # Reasonable range check for Y
-            y_max = max(y_max, y0)
+                raw_file = None
+                csv_writer = None
+                current_filename = None
+                filename_from_serial = ""
+                scan_active = True
+                # Disable Load/Resume buttons during scanning
+                root.after(0, lambda: set_controls_state("disabled"))
+            elif scan_active:
+                # Also disable buttons if we're starting a fresh scan
+                root.after(0, lambda: set_controls_state("disabled"))
 
         data_cnt += 1
 
@@ -292,15 +243,11 @@ def read_loop():
         y.append(y0)
         z.append(z0)
 
-        # Write data to CSV file (skip the 0,0 marker)
-        if csv_writer and not (x0 == 0 and y0 == 0):
+        if csv_writer:
             try:
                 csv_writer.writerow([x0, y0, z0])
-                # Flush every 100 rows to ensure data is saved
-                if data_cnt % 100 == 0:
-                    raw_file.flush()
-            except Exception as e:
-                print(f"[ERROR] Failed to write CSV row: {e}")
+            except Exception:
+                pass
 
         if len(x) > 1500 and x0 == 3 and y0 >= 5:
             del x[0:-309]
@@ -308,9 +255,7 @@ def read_loop():
             del z[0:-309]
 
         # ---------- End of scan ----------
-        # Detect end of scan: hardware sends matching max values (e.g., 100,100 or 200,200)
-        # Check if both x0 and y0 are at their detected maximums (within tolerance)
-        if (abs(x0 - x_range) <= 1 and abs(y0 - y_max) <= 1) or (x0 == y0 and x0 >= 100 and x0 == y_max):
+        if x0 == 100 and y0 == 100:
             try:
                 if filename_from_serial:
                     # Use same path logic as load_raw_data function
@@ -340,12 +285,10 @@ def read_loop():
 
             if raw_file:
                 try:
-                    raw_file.flush()  # Ensure all data is written
                     raw_file.close()
-                    print(f"[INFO] Raw data saved successfully: {current_filename}")
-                    print(f"[INFO] Total data points saved: {data_cnt}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to close raw file: {e}")
+                    print(f"[INFO] Raw data saved: {current_filename}")
+                except Exception:
+                    pass
                 raw_file = None
                 csv_writer = None
 
@@ -359,41 +302,28 @@ def read_loop():
 
 # ---------------- Initialize blank plot ----------------
 def initialize_blank_plot():
-    global x_range
     ax.cla()
     axh.cla()
     axm.cla()  # Clear the image subplot as well
     
     ax.grid(True, linestyle="--", alpha=0.7)
-    ax.set_xticks(np.arange(0, x_range + 1, max(10, int(x_range / 5))))
+    ax.set_xticks(np.arange(0, 101, 20))
     ax.set_yticks(np.arange(0, 101, 20))
     ax.set_facecolor("white")
 
     axh.grid(True, linestyle="-", alpha=0.7)
-    axh.set_xticks(np.arange(0, x_range + 1, max(10, int(x_range / 5))))
+    axh.set_xticks(np.arange(0, 101, 20))
     axh.set_yticks(np.arange(0, 101, 25))
     axh.set_zticks(np.arange(-0.4, 0.41, 0.2))
     axh.set_facecolor("none")
 
     ax.set_xlabel("x")
     ax.set_ylabel("y")
-    ax.set_xlim([0, 100])  # ALWAYS 0-100 to keep square
+    ax.set_xlim([0, 100])
     ax.set_ylim([0, 100])
-    
-    # Adjust ticks to show x_range and y_max
-    ax.set_xticks(np.linspace(0, 100, 6))
-    ax.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
-    axh.set_xticks(np.linspace(0, 100, 6))
-    axh.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
-    
-    # Set Y-axis tick labels to show actual y_max values
-    ax.set_yticks(np.linspace(0, 100, 6))
-    ax.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
-    axh.set_yticks(np.linspace(0, 100, 6))
-    axh.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
 
-    ax.set_title("Foreign object detection", fontsize=14, color=(0.2, 0.2, 0.2), pad=10)
-    axh.set_title("Foreign object detection (3D)", fontsize=14, color=(0.2, 0.2, 0.2), pad=10)
+    ax.set_title("Foreign object detection", fontsize=16, color=(0.2, 0.2, 0.2), y=1.05)
+    axh.set_title("Foreign object detection (3D)", fontsize=16, color=(0.2, 0.2, 0.2), y=1.06)
 
     axh.view_init(elev=20, azim=300)
     # Handle set_box_aspect for Raspberry Pi compatibility
@@ -405,7 +335,7 @@ def initialize_blank_plot():
     axh.set_xlabel("x")
     axh.set_ylabel("y")
     axh.set_zlabel("output")
-    axh.set_xlim([0, 100])  # ALWAYS 0-100 to keep square
+    axh.set_xlim([0, 100])
     axh.set_ylim([0, 100])
     axh.set_zlim([zmin, zmax])
 
@@ -415,7 +345,7 @@ def initialize_blank_plot():
 
 # ---------------- Update animation ----------------
 def update(i, xt, yt, zt, zmin, zmax):
-    global ax, axh, axm, cax, x_range, current_filename  # Make sure we can update these references
+    global ax, axh, axm, cax  # Make sure we can update these references
     if (not scan_active) or pause_live or len(x) < 2:
         return
     xs = copy.copy(x)
@@ -426,21 +356,8 @@ def update(i, xt, yt, zt, zmin, zmax):
         if diff > 0:
             xs = xs[diff:]
             ys = ys[diff:]
-    
-    # Filter and scale data based on x_range (zoom/crop feature)
-    # Only show data where X <= x_range (filter for any x_range value)
-    mask = [xi <= x_range for xi in xs]
-    xs = [xs[i] for i in range(len(xs)) if mask[i]]
-    ys = [ys[i] for i in range(len(ys)) if mask[i]]
-    zs = [zs[i] for i in range(len(zs)) if mask[i]]
-    
-    # Scale X and Y coordinates to fit in 0-100 display range
-    xs = [xi * 100 / x_range for xi in xs]
-    ys = [yi * 100 / y_max for yi in ys]
-    
-    if len(xs) < 2 or len(np.unique(xs)) < 2 or len(np.unique(ys)) < 2:
+    if len(np.unique(xs)) < 2 or len(np.unique(ys)) < 2:
         return
-    
     x_new, y_new = np.meshgrid(np.unique(xs), np.unique(ys))
     try:
         z_new0 = griddata((xs, ys), zs, (x_new, y_new), method="cubic")
@@ -454,8 +371,8 @@ def update(i, xt, yt, zt, zmin, zmax):
     if local_min < zmin:
         zmin = local_min
 
-    z_max = max(zs) if zs else 0
-    z_min = min(zs) if zs else 0
+    z_max = max(z) if z else 0
+    z_min = min(z) if z else 0
 
     fig.clf()
     spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
@@ -472,7 +389,6 @@ def update(i, xt, yt, zt, zmin, zmax):
     except AttributeError:
         pass  # Older matplotlib versions don't have this method
     
-    # Keep Migne image at fixed position (always 16-84, 40-60)
     ax.imshow(im_Migne, extent=[16, 84, 40, 60], alpha=0.08)
     ps = ax.contourf(x_new, y_new, z_new, 128, cmap="jet", vmin=zmin, vmax=zmax, alpha=0.9)
     try:
@@ -483,48 +399,18 @@ def update(i, xt, yt, zt, zmin, zmax):
 
     axm.imshow(im_Migne, alpha=0.7)
     axm.axis("off")
-    
-    # Display filename for live scan
-    display_name = ""
-    if current_filename:
-        base_name = os.path.splitext(os.path.basename(current_filename))[0]
-        if base_name.startswith("raw_"):
-            base_name = base_name[4:]
-        display_name = f"Live Scan: {base_name}"
-    
-    if display_name:
-        axm.text(0.5, -0.1, display_name, transform=axm.transAxes, 
-                ha='center', va='top', fontsize=10, color='black', weight='bold')
-    
     axh.text2D(0.70, 0.95, f"Z Max: {z_max:.6f}", transform=axh.transAxes)
     axh.text2D(0.70, 0.90, f"Z Min: {z_min:.6f}", transform=axh.transAxes)
-    
-    # Set axis limits - ALWAYS 0-100 to keep square, but only show data within x_range
     axh.set_xlim([0, 100])
     axh.set_zlim([zmin, zmax])
     ax.set_xlim([0, 100])
-    ax.set_ylim([0, 100])
-    
-    # Adjust ticks to show x_range and y_max
-    tick_spacing = max(10, int(x_range / 5))
-    ax.set_xticks(np.linspace(0, 100, 6))
-    ax.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
-    axh.set_xticks(np.linspace(0, 100, 6))
-    axh.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
-    
-    # Set Y-axis tick labels to show actual y_max values
-    ax.set_yticks(np.linspace(0, 100, 6))
-    ax.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
-    axh.set_yticks(np.linspace(0, 100, 6))
-    axh.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
-    
     axh.set_facecolor((0.9, 0.9, 0.9))
     axh.set_xlabel("x")
     axh.set_ylabel("y")
     axh.set_zlabel("output")
 
-    ax.set_title("Foreign object detection", fontsize=14, color=(0.2, 0.2, 0.2), pad=10)
-    axh.set_title("Foreign object detection (3D)", fontsize=14, color=(0.2, 0.2, 0.2), pad=10)
+    ax.set_title("Foreign object detection", fontsize=16, color=(0.2, 0.2, 0.2), y=1.05)
+    axh.set_title("Foreign object detection (3D)", fontsize=16, color=(0.2, 0.2, 0.2), y=1.06)
 
 # ---------------- Load Raw CSV ----------------
 def load_raw_data():
@@ -578,35 +464,7 @@ def load_raw_data():
         loaded_filename = None
 
 def show_loaded(xs, ys, zs):
-    global zmin, zmax, ax, axh, axm, cax, x_range, y_max, xlim_label
-    
-    # Auto-detect X and Y axis maximums from loaded data
-    detected_x_max = int(np.max(xs)) if len(xs) > 0 else 100
-    y_max = int(np.max(ys)) if len(ys) > 0 else 100
-    
-    # Auto-adjust x_range to match loaded data (round to nearest 50)
-    x_range = max(50, min(300, ((detected_x_max + 49) // 50) * 50))
-    
-    print(f"[INFO] Detected X-max: {detected_x_max}, adjusted x_range to: {x_range}")
-    print(f"[INFO] Detected Y-max: {y_max}")
-    
-    # Update the X-Lim label
-    try:
-        xlim_label.config(text=f"X-Lim: {x_range}")
-    except:
-        pass
-    
-    # Filter and scale data based on x_range (zoom/crop feature)
-    # Only show data where X <= x_range (filter for any x_range value)
-    mask = xs <= x_range
-    xs = xs[mask]
-    ys = ys[mask]
-    zs = zs[mask]
-    
-    # Scale X and Y coordinates to fit in 0-100 display range
-    xs = xs * 100 / x_range
-    ys = ys * 100 / y_max
-    
+    global zmin, zmax, ax, axh, axm, cax
     zmin, zmax = np.min(zs), np.max(zs)
 
     fig.clf()
@@ -630,12 +488,6 @@ def show_loaded(xs, ys, zs):
 
     axm.imshow(im_Migne, alpha=0.7)
     axm.axis("off")
-    
-    # Display loaded filename below Migne picture
-    if loaded_filename:
-        axm.text(0.5, -0.1, f"Loaded: {loaded_filename}", transform=axm.transAxes, 
-                ha='center', va='top', fontsize=10, color='black', weight='bold')
-    
     axh.view_init(elev=20, azim=300)
     
     # Handle set_box_aspect for Raspberry Pi compatibility
@@ -644,23 +496,9 @@ def show_loaded(xs, ys, zs):
     except AttributeError:
         pass  # Older matplotlib versions don't have this method
     
-    # Set axis limits - ALWAYS 0-100 to keep square
     axh.set_xlim([0, 100])
     axh.set_ylim([0, 100])
     axh.set_zlim([zmin, zmax])
-    ax.set_xlim([0, 100])
-    ax.set_ylim([0, 100])
-    
-    # Adjust ticks to show x_range and y_max
-    ax.set_xticks(np.linspace(0, 100, 6))
-    ax.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
-    axh.set_xticks(np.linspace(0, 100, 6))
-    axh.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
-    
-    ax.set_yticks(np.linspace(0, 100, 6))
-    ax.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
-    axh.set_yticks(np.linspace(0, 100, 6))
-    axh.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
     
     # Display Z min/max values on the 3D plot
     axh.text2D(0.70, 0.95, f"Z Max: {zmax:.6f}", transform=axh.transAxes)
@@ -677,13 +515,16 @@ def show_loaded(xs, ys, zs):
         axh.set_facecolor((0, 0, 0, 0))
     except AttributeError:
         pass  # Older matplotlib versions might not have these properties
+
+    ax.set_xlim([0, 100])
+    ax.set_ylim([0, 100])
     
     axh.set_xlabel("x")
     axh.set_ylabel("y")
     axh.set_zlabel("output")
 
-    ax.set_title("Loaded Raw Data (2D)", fontsize=14, pad=10)
-    axh.set_title("Loaded Raw Data (3D)", fontsize=14, pad=10)
+    ax.set_title("Loaded Raw Data (2D)", fontsize=16, y=1.05)
+    axh.set_title("Loaded Raw Data (3D)", fontsize=16, y=1.06)
     canvas.draw()
 
 def resume_live():
@@ -861,53 +702,6 @@ if __name__ == '__main__':
             load_btn = b
         if text == "Live Scan":
             resume_btn = b
-
-    # ---------------- X-Range Adjustment (below Exit button) ----------------
-    def increase_x_range():
-        global x_range
-        if x_range < 300:
-            x_range += 50
-            xlim_label.config(text=f"X-Lim: {x_range}")
-            # Refresh the current display if in ready state
-            if not pause_live and len(x) == 0:
-                initialize_blank_plot()
-                canvas.draw()
-    
-    def decrease_x_range():
-        global x_range
-        if x_range > 50:
-            x_range -= 50
-            xlim_label.config(text=f"X-Lim: {x_range}")
-            # Refresh the current display if in ready state
-            if not pause_live and len(x) == 0:
-                initialize_blank_plot()
-                canvas.draw()
-    
-    # Separator line
-    separator = tk.Frame(controls_frame, height=2, bg="#999999")
-    separator.pack(pady=8, fill=tk.X)
-    
-    # X-Lim indicator
-    xlim_label = tk.Label(controls_frame, text=f"X-Lim: {x_range}", 
-                         font=("Arial", 11, "bold"), bg="#d9d9d9", fg="#333333")
-    xlim_label.pack(pady=(4, 2))
-    
-    # Button frame for +/- controls
-    btn_range_frame = tk.Frame(controls_frame, bg="#d9d9d9")
-    btn_range_frame.pack(pady=4)
-    
-    btn_minus = tk.Button(btn_range_frame, text="-50", command=decrease_x_range,
-                         font=("Arial", 10, "bold"), bg="#f2f2f2", width=5, height=1)
-    btn_minus.pack(side=tk.LEFT, padx=2)
-    
-    btn_plus = tk.Button(btn_range_frame, text="+50", command=increase_x_range,
-                        font=("Arial", 10, "bold"), bg="#f2f2f2", width=5, height=1)
-    btn_plus.pack(side=tk.LEFT, padx=2)
-    
-    # Range note
-    range_note = tk.Label(controls_frame, text="Range: 50-300 only", 
-                         font=("Arial", 8), bg="#d9d9d9", fg="#666666")
-    range_note.pack(pady=(2, 4))
 
     # Initially enabled (buttons start enabled when no scan is active)
     set_controls_state("normal")

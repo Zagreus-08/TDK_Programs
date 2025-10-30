@@ -1775,7 +1775,7 @@ class InventoryApp:
             dlg = tk.Toplevel(win, bg=BACKGROUND_GRAY)
             apply_material_style(dlg)
             dlg.title(f"Edit PR #{pr_id}")
-            dlg.geometry("700x300")
+            dlg.geometry("750x350")
             dlg.transient(win)
             dlg.grab_set()
 
