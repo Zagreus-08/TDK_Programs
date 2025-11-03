@@ -2,7 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 Scan system for long loop - Auto-start version (Fullscreen + Toggleable Controls)
-Ver 0.9R-stable9   2025-10-28  (with automatic scan-reset and button state handling)
+Ver 0.9R-stable11   2025-11-03  (X/Y auto-sync, X-Lim controls removed)
+
+FEATURES:
+- Auto-detects scan dimensions from hardware (X: 50-300, Y: auto-detected)
+- Saves raw CSV data for all scan sizes
+- Auto-saves PNG at end of scan
+- Loads and displays any size raw data (50x50 to 300x300)
+- Maintains square 2D display with proper axis scaling
+- X/Y now auto-sync: whichever axis expands, the other follows
+- X-Lim manual buttons and label removed
 """
 
 import copy
@@ -28,6 +37,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 # ---------------- Global vars ----------------
 x, y, z = [], [], []
 zmin, zmax = -0.1, 0.1
+x_range = 100  # Default X-axis range (50-300)
+y_max = 100    # Auto-detected Y-axis maximum from hardware
 raw_file = None
 csv_writer = None
 current_filename = None
@@ -38,16 +49,16 @@ last_data_time = time.time()  # Track when we last received serial data
 
 # ---------------- Image ----------------
 im_Migne = plt.imread(
-    r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program\Migne_black_frameless.png"
+    '/home/pi/Desktop/Migne_black_frameless.png'
 )
 
 # ---------------- Serial ----------------
 try:
     # Try common Raspberry Pi serial ports first
     import glob
-    possible_ports = ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1", "COM7"]
+    possible_ports = ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1", "COM7", "COM6"]
     ser = None
-    
+
     for port in possible_ports:
         try:
             ser = serial.Serial(port, 115200, timeout=1)
@@ -55,7 +66,7 @@ try:
             break
         except (serial.SerialException, FileNotFoundError):
             continue
-    
+
     if ser is None:
         # If no port found, try to find any available port
         available_ports = glob.glob('/dev/tty[A-Za-z]*')
@@ -66,7 +77,7 @@ try:
                 break
             except (serial.SerialException, PermissionError):
                 continue
-                
+
 except Exception as e:
     print(f"Error: Could not open serial port.\n{str(e)}")
     ser = None
@@ -81,18 +92,18 @@ def save_figure_direct(filename):
     try:
         # Save at exactly 800x373 pixels
         width_inches = 800 / 100
-        height_inches = 373 / 100
-        
+        height_inches = 480 / 100
+
         # Store original size
         original_size = fig.get_size_inches()
-        
+
         # Temporarily set exact size for saving
         fig.set_size_inches(width_inches, height_inches)
-        fig.savefig(filename, dpi=100, bbox_inches=None, facecolor='white', edgecolor='none')
-        
+        fig.savefig(filename, dpi=100, bbox_inches=None)
+
         # Restore original size
         fig.set_size_inches(original_size)
-        
+
         print(f"[INFO] Figure saved successfully to: {filename}")
         return True
     except Exception as e:
@@ -110,9 +121,9 @@ def start_new_raw_file(name_hint=""):
     if not name_hint:
         name_hint = time.strftime("%Y%m%d_%H%M%S")
 
-    raw_dir = r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program\raw data"
+    raw_dir = '/home/pi/Shared/raw_data'
     os.makedirs(raw_dir, exist_ok=True)
-    raw_path = os.path.join(raw_dir, f"raw_{name_hint}.csv")
+    raw_path = os.path.join(raw_dir, f"{name_hint}.csv")
 
     try:
         raw_file = open(raw_path, "w", newline="")
@@ -141,21 +152,21 @@ def set_controls_state(state):
 def check_serial_timeout():
     """Check if serial data has stopped coming and re-enable buttons if needed"""
     global scan_active, last_data_time
-    
+
     try:
         current_time = time.time()
         time_since_last_data = current_time - last_data_time
-        
+
         # Debug print every 5 seconds
         if int(current_time) % 5 == 0:
             print(f"[DEBUG] scan_active: {scan_active}, time_since_last_data: {time_since_last_data:.1f}s")
-        
+
         # Check timeout condition: scan is active AND (no serial OR timeout reached)
         if scan_active and (ser is None or time_since_last_data > 3.0):
             print(f"[INFO] Timeout reached ({time_since_last_data:.1f}s), re-enabling buttons")
             scan_active = False
             set_controls_state("normal")
-        
+
         # Schedule next check
         root.after(1000, check_serial_timeout)  # Check every 1 second
     except Exception as e:
@@ -168,7 +179,7 @@ def check_serial_timeout():
 
 # ---------------- Serial loop ----------------
 def read_loop():
-    global raw_file, csv_writer, current_filename, scan_active, last_data_time, pause_live
+    global raw_file, csv_writer, current_filename, scan_active, last_data_time, pause_live, x_range, y_max
     data_cnt = 0
     filename_from_serial = ""
 
@@ -188,10 +199,10 @@ def read_loop():
             x0 = float(parts[0])
             y0 = float(parts[1])
             z0 = float(parts[2])
-            
+
             # Update last data received time
             last_data_time = time.time()
-            
+
         except (ValueError, IndexError):
             print("data error @count=", data_cnt)
             continue
@@ -208,33 +219,66 @@ def read_loop():
             # Reset plot to blank and disable buttons
             root.after(0, lambda: (resume_live(), set_controls_state("disabled")))
 
-        # Detect filename sent by 1st program (captured once per scan)
-        if len(parts) >= 4 and not filename_from_serial:
-            filename_from_serial = parts[3].strip()
-            start_new_raw_file(filename_from_serial)
-        
-        # ---------- New scan detection ----------
+        # ---------- New scan detection (0,0 marks start of scan) ----------
         if x0 == 0 and y0 == 0:
-            if len(x) > 0 or not scan_active:
+            # Close previous scan's raw file if it exists
+            if raw_file:
+                try:
+                    raw_file.close()
+                    print(f"[INFO] Closed previous raw file: {current_filename}")
+                except Exception:
+                    pass
+
+            # Clear buffers for new scan
+            if len(x) > 0:
                 print("[INFO] New scan detected (0,0). Clearing buffers and starting fresh.")
                 x.clear()
                 y.clear()
                 z.clear()
-                try:
-                    if raw_file:
-                        raw_file.close()
-                except Exception:
-                    pass
-                raw_file = None
-                csv_writer = None
-                current_filename = None
-                filename_from_serial = ""
-                scan_active = True
-                # Disable Load/Resume buttons during scanning
-                root.after(0, lambda: set_controls_state("disabled"))
-            elif scan_active:
-                # Also disable buttons if we're starting a fresh scan
-                root.after(0, lambda: set_controls_state("disabled"))
+
+            # Reset variables for new scan
+            raw_file = None
+            csv_writer = None
+            current_filename = None
+            filename_from_serial = ""
+            scan_active = True
+
+            # Reset y_max and x_range for new scan
+            y_max = 100
+            x_range = 100
+
+            # Disable Load/Resume buttons during scanning
+            root.after(0, lambda: set_controls_state("disabled"))
+
+            # Detect filename sent by 1st program (should come with or after 0,0)
+            if len(parts) >= 4:
+                filename_from_serial = parts[3].strip()
+                start_new_raw_file(filename_from_serial)
+                print(f"[INFO] Started new scan with filename: {filename_from_serial}")
+
+        # Detect filename if it comes after (0,0) - backup detection
+        elif len(parts) >= 4 and not filename_from_serial and scan_active:
+            filename_from_serial = parts[3].strip()
+            start_new_raw_file(filename_from_serial)
+            print(f"[INFO] Started raw file with filename: {filename_from_serial}")
+
+        # Auto-detect X and Y axis maximums from incoming data
+        if x0 > 0 and x0 <= 300:  # Reasonable range check for X
+            detected_x_max = max(x0, x_range if x_range > 100 else 100)
+            # Auto-adjust x_range during live scan (round to nearest 50)
+            new_x_range = max(50, min(300, ((int(detected_x_max) + 49) // 50) * 50))
+            if new_x_range != x_range:
+                x_range = new_x_range
+                # sync with y_max to keep square scaling
+                max_range = max(x_range, y_max)
+                x_range = y_max = max_range
+                print(f"[INFO] Auto-adjusted x_range to: {x_range} (synced y_max)")
+
+        if y0 > 0 and y0 <= 300:  # Reasonable range check for Y
+            y_max = max(y_max, y0)
+            # sync with x_range to keep square scaling
+            max_range = max(x_range, y_max)
+            x_range = y_max = max_range
 
         data_cnt += 1
 
@@ -243,11 +287,15 @@ def read_loop():
         y.append(y0)
         z.append(z0)
 
-        if csv_writer:
+        # Write data to CSV file (skip the 0,0 marker)
+        if csv_writer and not (x0 == 0 and y0 == 0):
             try:
                 csv_writer.writerow([x0, y0, z0])
-            except Exception:
-                pass
+                # Flush every 100 rows to ensure data is saved
+                if data_cnt % 100 == 0:
+                    raw_file.flush()
+            except Exception as e:
+                print(f"[ERROR] Failed to write CSV row: {e}")
 
         if len(x) > 1500 and x0 == 3 and y0 >= 5:
             del x[0:-309]
@@ -255,27 +303,24 @@ def read_loop():
             del z[0:-309]
 
         # ---------- End of scan ----------
-        if x0 == 100 and y0 == 100:
+        # Detect end of scan: hardware sends matching max values (e.g., 100,100 or 200,200)
+        # Check if both x0 and y0 are at their detected maximums (within tolerance)
+        if (abs(x0 - x_range) <= 1 and abs(y0 - y_max) <= 1) or (x0 == y0 and x0 >= 100 and x0 == y_max):
             try:
                 if filename_from_serial:
                     # Use same path logic as load_raw_data function
                     possible_paths = [
-                        "/home/pi/Desktop/Metal Particle Program",
-                        "/home/pi/Desktop", 
-                        "/home/pi",
-                        os.path.join(os.path.expanduser("~"), "Desktop", "Metal Particle Program"),
-                        os.path.join(os.path.expanduser("~"), "Desktop"),
-                        r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program"
+                        '/home/pi/Shared'
                     ]
-                    
+
                     save_dir = os.getcwd()  # Default fallback
-                    
+
                     # Find the first existing path
                     for path in possible_paths:
                         if os.path.exists(path):
                             save_dir = path
                             break
-                    
+
                     save_path = os.path.join(save_dir, filename_from_serial + ".png")
                     print(f"[INFO] Scan complete, attempting to save to: {save_path}")
                     # Save directly in main thread using root.after to ensure thread safety
@@ -285,10 +330,12 @@ def read_loop():
 
             if raw_file:
                 try:
+                    raw_file.flush()  # Ensure all data is written
                     raw_file.close()
-                    print(f"[INFO] Raw data saved: {current_filename}")
-                except Exception:
-                    pass
+                    print(f"[INFO] Raw data saved successfully: {current_filename}")
+                    print(f"[INFO] Total data points saved: {data_cnt}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to close raw file: {e}")
                 raw_file = None
                 csv_writer = None
 
@@ -302,40 +349,63 @@ def read_loop():
 
 # ---------------- Initialize blank plot ----------------
 def initialize_blank_plot():
+    global x_range, y_max
     ax.cla()
     axh.cla()
     axm.cla()  # Clear the image subplot as well
-    
+
+    # Ensure x_range / y_max are synced to keep square
+    max_range = max(x_range, y_max)
+    x_range = y_max = max_range
+
     ax.grid(True, linestyle="--", alpha=0.7)
-    ax.set_xticks(np.arange(0, 101, 20))
+    ax.set_xticks(np.arange(0, x_range + 1, max(10, int(x_range / 5))))
     ax.set_yticks(np.arange(0, 101, 20))
     ax.set_facecolor("white")
 
     axh.grid(True, linestyle="-", alpha=0.7)
-    axh.set_xticks(np.arange(0, 101, 20))
+    axh.set_xticks(np.arange(0, x_range + 1, max(10, int(x_range / 5))))
     axh.set_yticks(np.arange(0, 101, 25))
     axh.set_zticks(np.arange(-0.4, 0.41, 0.2))
     axh.set_facecolor("none")
 
     ax.set_xlabel("x")
     ax.set_ylabel("y")
-    ax.set_xlim([0, 100])
+    ax.set_xlim([0, 100])  # Display coordinates always 0-100
     ax.set_ylim([0, 100])
 
-    ax.set_title("Foreign object detection", fontsize=16, color=(0.2, 0.2, 0.2), y=1.05)
-    axh.set_title("Foreign object detection (3D)", fontsize=16, color=(0.2, 0.2, 0.2), y=1.06)
+    # Force equal aspect on 2D plot so pixels are square
+    try:
+        ax.set_aspect('equal', adjustable='box')
+    except Exception:
+        pass
+
+    # Adjust ticks to show x_range and y_max
+    ax.set_xticks(np.linspace(0, 100, 6))
+    ax.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_xticks(np.linspace(0, 100, 6))
+    axh.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
+
+    # Set Y-axis tick labels to show actual y_max values
+    ax.set_yticks(np.linspace(0, 100, 6))
+    ax.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_yticks(np.linspace(0, 100, 6))
+    axh.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
+
+    ax.set_title("Foreign object detection", fontsize=12, color=(0.2, 0.2, 0.2), pad=30)
+    axh.set_title("Foreign object detection (3D)", fontsize=12, color=(0.2, 0.2, 0.2), pad=10)
 
     axh.view_init(elev=20, azim=300)
-    # Handle set_box_aspect for Raspberry Pi compatibility
+    # Handle set_box_aspect for Raspberry Pi compatibility (3D)
     try:
-        axh.set_box_aspect((5, 5, 3.5))
+        axh.set_box_aspect((1, 1, 0.7))
     except AttributeError:
         pass  # Older matplotlib versions don't have this method
-    
+
     axh.set_xlabel("x")
     axh.set_ylabel("y")
     axh.set_zlabel("output")
-    axh.set_xlim([0, 100])
+    axh.set_xlim([0, 100])  # Display coordinates always 0-100
     axh.set_ylim([0, 100])
     axh.set_zlim([zmin, zmax])
 
@@ -344,8 +414,9 @@ def initialize_blank_plot():
     axm.axis("off")
 
 # ---------------- Update animation ----------------
-def update(i, xt, yt, zt, zmin, zmax):
-    global ax, axh, axm, cax  # Make sure we can update these references
+def update(i, xt, yt, zt, zmin_arg, zmax_arg):
+    # note: name zmin/zmax in args to prevent shadowing globals accidentally
+    global ax, axh, axm, cax, x_range, current_filename, y_max, zmin, zmax
     if (not scan_active) or pause_live or len(x) < 2:
         return
     xs = copy.copy(x)
@@ -356,8 +427,25 @@ def update(i, xt, yt, zt, zmin, zmax):
         if diff > 0:
             xs = xs[diff:]
             ys = ys[diff:]
-    if len(np.unique(xs)) < 2 or len(np.unique(ys)) < 2:
+
+    # Filter and scale data based on x_range (zoom/crop feature)
+    # Only show data where X <= x_range (filter for any x_range value)
+    mask = [xi <= x_range for xi in xs]
+    xs = [xs[i] for i in range(len(xs)) if mask[i]]
+    ys = [ys[i] for i in range(len(ys)) if mask[i]]
+    zs = [zs[i] for i in range(len(zs)) if mask[i]]
+
+    # Keep x_range and y_max synced before scaling
+    max_range = max(x_range, y_max)
+    x_range = y_max = max_range
+
+    # Scale X and Y coordinates to fit in 0-100 display range
+    xs = [xi * 100 / x_range for xi in xs]
+    ys = [yi * 100 / y_max for yi in ys]
+
+    if len(xs) < 2 or len(np.unique(xs)) < 2 or len(np.unique(ys)) < 2:
         return
+
     x_new, y_new = np.meshgrid(np.unique(xs), np.unique(ys))
     try:
         z_new0 = griddata((xs, ys), zs, (x_new, y_new), method="cubic")
@@ -371,8 +459,8 @@ def update(i, xt, yt, zt, zmin, zmax):
     if local_min < zmin:
         zmin = local_min
 
-    z_max = max(z) if z else 0
-    z_min = min(z) if z else 0
+    z_max = max(zs) if zs else 0
+    z_min = min(zs) if zs else 0
 
     fig.clf()
     spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
@@ -383,12 +471,13 @@ def update(i, xt, yt, zt, zmin, zmax):
     cax = divider.append_axes("right", size="5%", pad=0.5)
 
     axh.view_init(elev=20, azim=300)
-    # Remove set_box_aspect for Raspberry Pi compatibility
+    # Try to set 3D box aspect but be tolerant of older matplotlib
     try:
-        axh.set_box_aspect((5, 5, 3.5))
-    except AttributeError:
-        pass  # Older matplotlib versions don't have this method
-    
+        axh.set_box_aspect((1, 1, 0.7))
+    except Exception:
+        pass
+
+    # Keep Migne image at fixed position (always 16-84, 40-60)
     ax.imshow(im_Migne, extent=[16, 84, 40, 60], alpha=0.08)
     ps = ax.contourf(x_new, y_new, z_new, 128, cmap="jet", vmin=zmin, vmax=zmax, alpha=0.9)
     try:
@@ -399,36 +488,73 @@ def update(i, xt, yt, zt, zmin, zmax):
 
     axm.imshow(im_Migne, alpha=0.7)
     axm.axis("off")
+
+    # Display filename for live scan
+    display_name = ""
+    if current_filename:
+        base_name = os.path.splitext(os.path.basename(current_filename))[0]
+        if base_name.startswith("raw_"):
+            base_name = base_name[4:]
+        display_name = f"Live Scan: {base_name}"
+
+    if display_name:
+        axm.text(0.5, -0.1, display_name, transform=axm.transAxes,
+                ha='center', va='top', fontsize=10, color='black', weight='bold')
+
     axh.text2D(0.70, 0.95, f"Z Max: {z_max:.6f}", transform=axh.transAxes)
     axh.text2D(0.70, 0.90, f"Z Min: {z_min:.6f}", transform=axh.transAxes)
+
+    # Set axis limits - ALWAYS 0-100 to keep display square in coordinates
     axh.set_xlim([0, 100])
     axh.set_zlim([zmin, zmax])
     ax.set_xlim([0, 100])
+    ax.set_ylim([0, 100])
+
+    # Force equal aspect on 2D plot
+    try:
+        ax.set_aspect('equal', adjustable='box')
+    except Exception:
+        pass
+
+    # Adjust ticks to show x_range and y_max
+    tick_spacing = max(10, int(x_range / 5))
+    ax.set_xticks(np.linspace(0, 100, 6))
+    ax.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_xticks(np.linspace(0, 100, 6))
+    axh.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
+
+    # Set Y-axis tick labels to show actual y_max values
+    ax.set_yticks(np.linspace(0, 100, 6))
+    ax.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_yticks(np.linspace(0, 100, 6))
+    axh.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
+
     axh.set_facecolor((0.9, 0.9, 0.9))
     axh.set_xlabel("x")
     axh.set_ylabel("y")
     axh.set_zlabel("output")
 
-    ax.set_title("Foreign object detection", fontsize=16, color=(0.2, 0.2, 0.2), y=1.05)
-    axh.set_title("Foreign object detection (3D)", fontsize=16, color=(0.2, 0.2, 0.2), y=1.06)
+    ax.set_title("Foreign object detection", fontsize=12, color=(0.2, 0.2, 0.2), pad=30)
+    axh.set_title("Foreign object detection (3D)", fontsize=12, color=(0.2, 0.2, 0.2), pad=10)
+
+    # Draw canvas to update display
+    try:
+        canvas.draw()
+    except Exception:
+        pass
 
 # ---------------- Load Raw CSV ----------------
 def load_raw_data():
     global pause_live, loaded_filename
     pause_live = True
-    
+
     # Set initial directory - try multiple possible paths for Raspberry Pi
     possible_paths = [
-        "/home/pi/Desktop/Metal Particle Program/raw data",
-        "/home/pi/Desktop/raw data", 
-        "/home/pi/raw data",
-        os.path.join(os.path.expanduser("~"), "Desktop", "Metal Particle Program", "raw data"),
-        os.path.join(os.path.expanduser("~"), "Desktop", "raw data"),
-        r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program\raw data"
+        '/home/pi/Shared/raw_data'
     ]
-    
+
     raw_dir = os.getcwd()  # Default fallback
-    
+
     # Find the first existing path
     for path in possible_paths:
         if os.path.exists(path):
@@ -437,13 +563,13 @@ def load_raw_data():
             break
     else:
         print(f"[WARNING] No raw data directory found, using: {raw_dir}")
-    
+
     file_path = filedialog.askopenfilename(
-        title="Select Raw CSV File", 
+        title="Select Raw CSV File",
         filetypes=[("CSV Files", "*.csv")],
         initialdir=raw_dir
     )
-    
+
     if not file_path:
         pause_live = False
         return
@@ -453,7 +579,7 @@ def load_raw_data():
         # Remove "raw_" prefix if present
         if loaded_filename.startswith("raw_"):
             loaded_filename = loaded_filename[4:]
-        
+
         data = np.loadtxt(file_path, delimiter=",", skiprows=1)
         xs, ys, zs = data[:, 0], data[:, 1], data[:, 2]
         show_loaded(xs, ys, zs)
@@ -464,7 +590,38 @@ def load_raw_data():
         loaded_filename = None
 
 def show_loaded(xs, ys, zs):
-    global zmin, zmax, ax, axh, axm, cax
+    global zmin, zmax, ax, axh, axm, cax, x_range, y_max
+
+    if len(xs) == 0 or len(ys) == 0:
+        messagebox.showerror("Error", "Loaded CSV has no data.")
+        return
+
+    # Auto-detect X and Y axis maximums from loaded data
+    detected_x_max = int(np.max(xs)) if len(xs) > 0 else 100
+    detected_y_max = int(np.max(ys)) if len(ys) > 0 else 100
+
+    # Auto-adjust x_range to match loaded data (round to nearest 50)
+    x_range = max(50, min(300, ((detected_x_max + 49) // 50) * 50))
+    y_max = detected_y_max
+
+    # Sync X and Y so they match the larger dimension (keep square)
+    max_range = max(x_range, y_max)
+    x_range = y_max = max_range
+
+    print(f"[INFO] Detected X-max: {detected_x_max}, adjusted x_range to: {x_range}")
+    print(f"[INFO] Detected Y-max: {detected_y_max}, synced y_max to: {y_max}")
+
+    # Filter and scale data based on x_range (zoom/crop feature)
+    # Only show data where X <= x_range (filter for any x_range value)
+    mask = xs <= x_range
+    xs = xs[mask]
+    ys = ys[mask]
+    zs = zs[mask]
+
+    # Scale X and Y coordinates to fit in 0-100 display range
+    xs = xs * 100 / x_range
+    ys = ys * 100 / y_max
+
     zmin, zmax = np.min(zs), np.max(zs)
 
     fig.clf()
@@ -488,22 +645,48 @@ def show_loaded(xs, ys, zs):
 
     axm.imshow(im_Migne, alpha=0.7)
     axm.axis("off")
+
+    # Display loaded filename below Migne picture
+    if loaded_filename:
+        axm.text(0.5, -0.1, f"Loaded: {loaded_filename}", transform=axm.transAxes,
+                ha='center', va='top', fontsize=10, color='black', weight='bold')
+
     axh.view_init(elev=20, azim=300)
-    
+
     # Handle set_box_aspect for Raspberry Pi compatibility
     try:
-        axh.set_box_aspect((5, 5, 3.5))
+        axh.set_box_aspect((1, 1, 0.7))
     except AttributeError:
         pass  # Older matplotlib versions don't have this method
-    
+
+    # Set axis limits - ALWAYS 0-100 to keep square coordinates
     axh.set_xlim([0, 100])
     axh.set_ylim([0, 100])
     axh.set_zlim([zmin, zmax])
-    
+    ax.set_xlim([0, 100])
+    ax.set_ylim([0, 100])
+
+    # Force 2D equal aspect
+    try:
+        ax.set_aspect('equal', adjustable='box')
+    except Exception:
+        pass
+
+    # Adjust ticks to show x_range and y_max
+    ax.set_xticks(np.linspace(0, 100, 6))
+    ax.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_xticks(np.linspace(0, 100, 6))
+    axh.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
+
+    ax.set_yticks(np.linspace(0, 100, 6))
+    ax.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_yticks(np.linspace(0, 100, 6))
+    axh.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
+
     # Display Z min/max values on the 3D plot
     axh.text2D(0.70, 0.95, f"Z Max: {zmax:.6f}", transform=axh.transAxes)
     axh.text2D(0.70, 0.90, f"Z Min: {zmin:.6f}", transform=axh.transAxes)
-    
+
     # Handle pane properties for Raspberry Pi compatibility
     try:
         axh.xaxis.pane.fill = False
@@ -516,15 +699,12 @@ def show_loaded(xs, ys, zs):
     except AttributeError:
         pass  # Older matplotlib versions might not have these properties
 
-    ax.set_xlim([0, 100])
-    ax.set_ylim([0, 100])
-    
     axh.set_xlabel("x")
     axh.set_ylabel("y")
     axh.set_zlabel("output")
 
-    ax.set_title("Loaded Raw Data (2D)", fontsize=16, y=1.05)
-    axh.set_title("Loaded Raw Data (3D)", fontsize=16, y=1.06)
+    ax.set_title("Loaded Raw Data (2D)", fontsize=12, pad=30)
+    axh.set_title("Loaded Raw Data (3D)", fontsize=12, pad=10)
     canvas.draw()
 
 def resume_live():
@@ -538,7 +718,7 @@ def resume_live():
     z.clear()
     # Reset z-axis limits to default
     zmin, zmax = -0.1, 0.1
-    
+
     # Recreate the figure structure (same as in GUI setup)
     fig.clf()
     spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
@@ -547,7 +727,7 @@ def resume_live():
     axm = fig.add_subplot(spec[0, 0:])
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.5)
-    
+
     initialize_blank_plot()
     canvas.draw()
 
@@ -558,7 +738,7 @@ if __name__ == '__main__':
     th_ser.start()
 
     root = tk.Tk()
-    root.title("Scan system ver.0.9R-stable9")
+    root.title("Scan system ver.1.2")
     root.configure(bg="#e5e5e5")
     root.attributes("-fullscreen", True)
     root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
@@ -601,10 +781,10 @@ if __name__ == '__main__':
     def do_home(): safe_action(hidden_toolbar.home)
     def do_pan(): safe_action(hidden_toolbar.pan)
     def do_zoom(): safe_action(hidden_toolbar.zoom)
-    def do_save(): 
+    def do_save():
         def custom_save():
             global current_filename, loaded_filename
-            
+
             # Determine filename based on current state
             if loaded_filename:
                 # Use loaded filename (from raw data)
@@ -618,45 +798,40 @@ if __name__ == '__main__':
             else:
                 # Fallback to timestamp if no filename available
                 base_filename = time.strftime("%Y%m%d_%H%M%S")
-            
+
             # Determine save directory
             possible_paths = [
-                "/home/pi/Desktop/Metal Particle Program",
-                "/home/pi/Desktop", 
-                "/home/pi",
-                os.path.join(os.path.expanduser("~"), "Desktop", "Metal Particle Program"),
-                os.path.join(os.path.expanduser("~"), "Desktop"),
-                r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\Metal Particle Program"
+                '/home/pi/Shared'
             ]
-            
+
             save_dir = os.getcwd()  # Default fallback
-            
+
             # Find the first existing path
             for path in possible_paths:
                 if os.path.exists(path):
                     save_dir = path
                     break
-            
+
             # Create full filename path
             filename = os.path.join(save_dir, f"{base_filename}.png")
-            
+
             try:
                 # Save at exactly 800x373 pixels
                 # Calculate figure size in inches for exact pixel output
                 width_inches = 800 / 100  # 8 inches at 100 DPI = 800 pixels
-                height_inches = 373 / 100  # 3.73 inches at 100 DPI = 373 pixels
-                
+                height_inches = 480 / 100  # 3.73 inches at 100 DPI = 373 pixels
+
                 # Store original size
                 original_size = fig.get_size_inches()
-                
+
                 # Temporarily set exact size for saving
                 fig.set_size_inches(width_inches, height_inches)
                 fig.savefig(filename, dpi=100, bbox_inches=None)
-                
+
                 # Immediately restore original size
                 fig.set_size_inches(original_size)
                 canvas.draw()  # Refresh the display
-                
+
                 print(f"[INFO] Figure saved to: {filename} at 800x373 pixels")
                 messagebox.showinfo("Save Complete", f"Figure saved to:\n{filename}")
             except Exception as e:
@@ -668,7 +843,7 @@ if __name__ == '__main__':
                     canvas.draw()
                 except:
                     pass
-        
+
         safe_action(custom_save)
     def do_reboot():
         if messagebox.askyesno("Reboot", "Reboot the system?"):
@@ -702,6 +877,17 @@ if __name__ == '__main__':
             load_btn = b
         if text == "Live Scan":
             resume_btn = b
+
+    # Removed X-Range manual controls (buttons & label) — auto-synced X/Y now
+
+    # Separator line
+    separator = tk.Frame(controls_frame, height=2, bg="#999999")
+    separator.pack(pady=8, fill=tk.X)
+
+    # Range note (informational)
+    range_note = tk.Label(controls_frame, text="Range: Auto 50-300 (X/Y synced)", 
+                         font=("Arial", 8), bg="#d9d9d9", fg="#666666")
+    range_note.pack(pady=(2, 4))
 
     # Initially enabled (buttons start enabled when no scan is active)
     set_controls_state("normal")

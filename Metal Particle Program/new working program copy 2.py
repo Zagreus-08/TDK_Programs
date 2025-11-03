@@ -55,7 +55,7 @@ im_Migne = plt.imread(
 try:
     # Try common Raspberry Pi serial ports first
     import glob
-    possible_ports = ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1", "COM7"]
+    possible_ports = ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1", "COM7", "COM6"]
     ser = None
     
     for port in possible_ports:
