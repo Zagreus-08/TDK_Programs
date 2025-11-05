@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Scan system for long loop - Auto-start version (Fullscreen + Toggleable Controls)
-Ver 0.9R-stable11   2025-11-03  (X/Y auto-sync, X-Lim controls removed)
+Ver 0.9R-stable12   2025-11-05  (Independent X/Y dimensions)
 
 FEATURES:
 - Auto-detects scan dimensions from hardware (X: 50-300, Y: auto-detected)
@@ -10,7 +10,7 @@ FEATURES:
 - Auto-saves PNG at end of scan
 - Loads and displays any size raw data (50x50 to 300x300)
 - Maintains square 2D display with proper axis scaling
-- X/Y now auto-sync: whichever axis expands, the other follows
+- X and Y dimensions are now independent (supports 100x200, 200x100, etc.)
 - X-Lim manual buttons and label removed
 """
 
@@ -157,12 +157,9 @@ def check_serial_timeout():
         current_time = time.time()
         time_since_last_data = current_time - last_data_time
 
-        # Debug print every 5 seconds
-        if int(current_time) % 5 == 0:
-            print(f"[DEBUG] scan_active: {scan_active}, time_since_last_data: {time_since_last_data:.1f}s")
-
-        # Check timeout condition: scan is active AND (no serial OR timeout reached)
-        if scan_active and (ser is None or time_since_last_data > 3.0):
+        # Check timeout condition: scan is active AND timeout reached (5 seconds)
+        # Increased timeout to 5 seconds to be more reliable
+        if scan_active and time_since_last_data > 5.0:
             print(f"[INFO] Timeout reached ({time_since_last_data:.1f}s), re-enabling buttons")
             scan_active = False
             set_controls_state("normal")
@@ -179,7 +176,7 @@ def check_serial_timeout():
 
 # ---------------- Serial loop ----------------
 def read_loop():
-    global raw_file, csv_writer, current_filename, scan_active, last_data_time, pause_live, x_range, y_max
+    global raw_file, csv_writer, current_filename, scan_active, last_data_time, pause_live, x_range, y_max, zmin, zmax
     data_cnt = 0
     filename_from_serial = ""
 
@@ -221,6 +218,8 @@ def read_loop():
 
         # ---------- New scan detection (0,0 marks start of scan) ----------
         if x0 == 0 and y0 == 0:
+            print("[INFO] New scan detected (0,0). Resetting everything...")
+            
             # Close previous scan's raw file if it exists
             if raw_file:
                 try:
@@ -229,12 +228,10 @@ def read_loop():
                 except Exception:
                     pass
 
-            # Clear buffers for new scan
-            if len(x) > 0:
-                print("[INFO] New scan detected (0,0). Clearing buffers and starting fresh.")
-                x.clear()
-                y.clear()
-                z.clear()
+            # CRITICAL: Clear ALL buffers for new scan
+            x.clear()
+            y.clear()
+            z.clear()
 
             # Reset variables for new scan
             raw_file = None
@@ -242,10 +239,15 @@ def read_loop():
             current_filename = None
             filename_from_serial = ""
             scan_active = True
+            data_cnt = 0  # Reset data counter for new scan
 
             # Reset y_max and x_range for new scan
             y_max = 100
             x_range = 100
+            
+            # CRITICAL: Reset zmin/zmax for new scan to default values
+            zmin, zmax = -0.1, 0.1
+            print(f"[INFO] Reset color bar range to zmin={zmin}, zmax={zmax}")
 
             # Disable Load/Resume buttons during scanning
             root.after(0, lambda: set_controls_state("disabled"))
@@ -255,6 +257,9 @@ def read_loop():
                 filename_from_serial = parts[3].strip()
                 start_new_raw_file(filename_from_serial)
                 print(f"[INFO] Started new scan with filename: {filename_from_serial}")
+            
+            # Skip adding the (0,0) marker to the data buffers
+            continue
 
         # Detect filename if it comes after (0,0) - backup detection
         elif len(parts) >= 4 and not filename_from_serial and scan_active:
@@ -262,23 +267,17 @@ def read_loop():
             start_new_raw_file(filename_from_serial)
             print(f"[INFO] Started raw file with filename: {filename_from_serial}")
 
-        # Auto-detect X and Y axis maximums from incoming data
+        # Auto-detect X and Y axis maximums from incoming data (independently)
         if x0 > 0 and x0 <= 300:  # Reasonable range check for X
             detected_x_max = max(x0, x_range if x_range > 100 else 100)
             # Auto-adjust x_range during live scan (round to nearest 50)
             new_x_range = max(50, min(300, ((int(detected_x_max) + 49) // 50) * 50))
             if new_x_range != x_range:
                 x_range = new_x_range
-                # sync with y_max to keep square scaling
-                max_range = max(x_range, y_max)
-                x_range = y_max = max_range
-                print(f"[INFO] Auto-adjusted x_range to: {x_range} (synced y_max)")
+                print(f"[INFO] Auto-adjusted x_range to: {x_range}")
 
         if y0 > 0 and y0 <= 300:  # Reasonable range check for Y
             y_max = max(y_max, y0)
-            # sync with x_range to keep square scaling
-            max_range = max(x_range, y_max)
-            x_range = y_max = max_range
 
         data_cnt += 1
 
@@ -305,7 +304,10 @@ def read_loop():
         # ---------- End of scan ----------
         # Detect end of scan: hardware sends matching max values (e.g., 100,100 or 200,200)
         # Check if both x0 and y0 are at their detected maximums (within tolerance)
-        if (abs(x0 - x_range) <= 1 and abs(y0 - y_max) <= 1) or (x0 == y0 and x0 >= 100 and x0 == y_max):
+        # Only trigger if we have enough data points (avoid false positives)
+        if scan_active and data_cnt > 50 and ((abs(x0 - x_range) <= 1 and abs(y0 - y_max) <= 1) or (x0 == y0 and x0 >= 100 and x0 == y_max)):
+            print(f"[INFO] End of scan detected at ({x0},{y0}). Finalizing scan...")
+            
             try:
                 if filename_from_serial:
                     # Use same path logic as load_raw_data function
@@ -339,10 +341,16 @@ def read_loop():
                 raw_file = None
                 csv_writer = None
 
+            # Mark scan as complete and reset for next scan
             scan_active = False
             filename_from_serial = ""
+            
             # Re-enable Load/Resume buttons after scan finishes
+            print("[INFO] Re-enabling buttons after scan completion")
             root.after(0, lambda: set_controls_state("normal"))
+            
+            # Reset last_data_time to trigger timeout mechanism
+            last_data_time = time.time()
 
         if data_cnt >= 6000000:
             break
@@ -353,10 +361,6 @@ def initialize_blank_plot():
     ax.cla()
     axh.cla()
     axm.cla()  # Clear the image subplot as well
-
-    # Ensure x_range / y_max are synced to keep square
-    max_range = max(x_range, y_max)
-    x_range = y_max = max_range
 
     ax.grid(True, linestyle="--", alpha=0.7)
     ax.set_xticks(np.arange(0, x_range + 1, max(10, int(x_range / 5))))
@@ -417,7 +421,8 @@ def initialize_blank_plot():
 def update(i, xt, yt, zt, zmin_arg, zmax_arg):
     # note: name zmin/zmax in args to prevent shadowing globals accidentally
     global ax, axh, axm, cax, x_range, current_filename, y_max, zmin, zmax
-    if (not scan_active) or pause_live or len(x) < 2:
+    # Allow updates when paused (for loaded data) or when we have data
+    if pause_live or len(x) < 2:
         return
     xs = copy.copy(x)
     ys = copy.copy(y)
@@ -435,10 +440,6 @@ def update(i, xt, yt, zt, zmin_arg, zmax_arg):
     ys = [ys[i] for i in range(len(ys)) if mask[i]]
     zs = [zs[i] for i in range(len(zs)) if mask[i]]
 
-    # Keep x_range and y_max synced before scaling
-    max_range = max(x_range, y_max)
-    x_range = y_max = max_range
-
     # Scale X and Y coordinates to fit in 0-100 display range
     xs = [xi * 100 / x_range for xi in xs]
     ys = [yi * 100 / y_max for yi in ys]
@@ -453,7 +454,10 @@ def update(i, xt, yt, zt, zmin_arg, zmax_arg):
         z_new0 = griddata((xs, ys), zs, (x_new, y_new), method="nearest")
     z_new = np.nan_to_num(z_new0, nan=0)
 
+    # Calculate current data range
     local_max, local_min = np.nanmax(z_new), np.nanmin(z_new)
+    
+    # Expand zmin/zmax as needed to accommodate all data
     if local_max > zmax:
         zmax = local_max
     if local_min < zmin:
@@ -604,12 +608,8 @@ def show_loaded(xs, ys, zs):
     x_range = max(50, min(300, ((detected_x_max + 49) // 50) * 50))
     y_max = detected_y_max
 
-    # Sync X and Y so they match the larger dimension (keep square)
-    max_range = max(x_range, y_max)
-    x_range = y_max = max_range
-
     print(f"[INFO] Detected X-max: {detected_x_max}, adjusted x_range to: {x_range}")
-    print(f"[INFO] Detected Y-max: {detected_y_max}, synced y_max to: {y_max}")
+    print(f"[INFO] Detected Y-max: {detected_y_max}, y_max set to: {y_max}")
 
     # Filter and scale data based on x_range (zoom/crop feature)
     # Only show data where X <= x_range (filter for any x_range value)

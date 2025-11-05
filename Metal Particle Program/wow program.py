@@ -83,7 +83,7 @@ class StatusDataClass:
     # Scan parameters - grid dimensions
     xdensity = 100  # Number of lines (X direction)
     ydensity = 100  # Points per line (Y direction)
-    roughness = 20  # Scanning area size (mm)
+    roughness = 20  # Scanning area size (mm) - default 20mm
 
 class SerialDataComClass:
     def __init__(self):
@@ -383,10 +383,19 @@ class XYMoveClass(MotorClass, PortDefineClass, SystemFuncClass):
             print("STOP detected in YmoveCorrect - Exiting!")
             return
         ydiff = int(step)
-        if ydiff < 0 :
-            self.YfrontCorrect(abs(ydiff))
-        else :
-            self.YbackCorrect(ydiff)
+        
+        # For small movements (< 50 steps), skip chunking for smoother scanning
+        if abs(ydiff) < 50:
+            if ydiff < 0:
+                MotorClass.motorY.motor_go(True, "Full", abs(ydiff), .0001, False, .0001)
+            elif ydiff > 0:
+                MotorClass.motorY.motor_go(False, "Full", ydiff, .0001, False, .0001)
+        else:
+            # Use chunking for large movements
+            if ydiff < 0:
+                self.YfrontCorrect(abs(ydiff))
+            else:
+                self.YbackCorrect(ydiff)
             
             
     def YbackCorrect2(self, step):
@@ -816,11 +825,14 @@ class DataScanClass:
             self.gui.StopButton.config(state='disabled')
             print("STOP button disabled during ScanPos")
 
-            # Normal execution of ScanPos
+            # Move to scanning position - this is just for manual particle centering
+            # NO adjustment here - adjustment happens during ScanRoutine
             self.zmove.ZmoveCorrect(-1 * int(StatusDataClass.ScanHt) + StatusDataClass.ZOffset)
             self.xymove.XmoveCorrect(int(StatusDataClass.x_offset))
             self.xymove.YmoveCorrect(100)
             self.xymove.YmoveCorrect(int(StatusDataClass.y_offset))
+            
+            print("[INFO] At scanning position - manually center the particle now")
 
         except Exception as e:
             print(f"Error during ScanPos: {e}")
@@ -831,10 +843,40 @@ class DataScanClass:
             print("STOP button re-enabled after ScanPos")
 
     def UnloadPos(self):
+        # Simple unload - just return to home position
         self.xymove.YmoveCorrect(int(-StatusDataClass.y_offset))
         self.xymove.YmoveCorrect(-100)
         self.xymove.XmoveCorrect(int(-StatusDataClass.x_offset))
         self.zmove.ZmoveCorrect(int(StatusDataClass.ScanHt) - StatusDataClass.ZOffset)
+    
+    def UnloadPosAfterScan(self):
+        # Unload after scan - includes reversing the centering adjustment
+        scan_area_mm = StatusDataClass.roughness
+        half_area_steps = int((scan_area_mm / 2) * 20)  # Convert mm to steps (20 steps per mm)
+        
+        # Move X and Y axes back SLOWLY and SMOOTHLY by half the scan area
+        # Move 1 step at a time with small delays for smooth continuous motion
+        remaining_steps = half_area_steps
+        
+        for step in range(remaining_steps):
+            if SystemFuncClass.stop_flag:
+                return
+            
+            # Move X back by 1 step
+            self.xymove.XmoveCorrect(-1)
+            sleep(0.01)  # 10ms delay = smooth motion at 100 steps/sec
+            
+            if SystemFuncClass.stop_flag:
+                return
+            
+            # Move Y back by 1 step (same speed for synchronized movement)
+            self.xymove.YmoveCorrect(-1)
+            sleep(0.01)  # 10ms delay = smooth motion at 100 steps/sec
+        
+        print("[INFO] Returning to center position complete")
+        
+        # Then return to home position
+        self.UnloadPos()
 
     def UnloadPos_stopped(self):
         self.home.Yhome()
@@ -958,6 +1000,11 @@ class DataScanClass:
         xrough = roughdness / xdensity
         yrough = roughdness / ydensity
         
+        # Calculate step sizes with rounding to prevent precision loss
+        # Ensure minimum step size of 1 to maintain scanning area
+        y_step = max(1, round(yrough * 20))
+        x_step = max(1, round(xrough * 20))
+        
         x_pos = 0
         dir_num = [-1, 1]
         dir_flag = True
@@ -968,19 +1015,19 @@ class DataScanClass:
                 return  # Immediately exit scan
             
             StatusDataClass.x_point = x_pos
-            self.LineScan(ydensity, 0, int(yrough * -20), c, fn)
+            self.LineScan(ydensity, 0, -y_step, c, fn)
             if SystemFuncClass.stop_flag:
                 print("STOP detected in CorrectScan - Exiting!")
                 return  # Immediately exit scan
                 
-            self.xymove.YmoveCorrect2(-1 * int(yrough * -20) * ydensity)
+            self.xymove.YmoveCorrect2(y_step * ydensity)
             if SystemFuncClass.stop_flag:
                 print("STOP detected in CorrectScan - Exiting!")
                 return  # Immediately exit scan
             
             #dassyutujouken
             if x_pos == xdensity :
-                self.xymove.XmoveCorrect(int(xrough * 20) * 100)
+                self.xymove.XmoveCorrect(x_step * 100)
                 if SystemFuncClass.stop_flag:
                     print("STOP detected in CorrectScan - Exiting!")
                     return  # Immediately exit scan
@@ -988,7 +1035,7 @@ class DataScanClass:
             x_pos += 1
 
             #tsuginoscannojunbi
-            self.xymove.XmoveCorrect(int(xrough * -20))
+            self.xymove.XmoveCorrect(-x_step)
             if SystemFuncClass.stop_flag:
                 print("STOP detected in CorrectScan - Exiting!")
                 return  # Immediately exit scan
@@ -1058,11 +1105,44 @@ class DataScanClass:
         sleep (1.5)
         if SystemFuncClass.stop_flag:
                 return
+        
+        # Apply centering adjustment based on scan area
+        # Move both X and Y by half the scan area to center the particle
+        scan_area_mm = StatusDataClass.roughness
+        half_area_steps = int((scan_area_mm / 2) * 20)  # Convert mm to steps (20 steps per mm)
+        
+        print(f"[INFO] Centering scan: Moving X and Y axes by {scan_area_mm/2}mm ({half_area_steps} steps) to start position")
+        print(f"[INFO] Scan will proceed, centering particle in {scan_area_mm}mm scan area")
+        
+        # Move X and Y by half the scan area SLOWLY and SMOOTHLY to prevent system damage
+        # Move 1 step at a time with small delays for smooth continuous motion
+        remaining_steps = half_area_steps
+        
+        for step in range(remaining_steps):
+            if SystemFuncClass.stop_flag:
+                return
+            
+            # Move X by 1 step
+            self.xymove.XmoveCorrect(1)
+            sleep(0.01)  # 10ms delay = smooth motion at 100 steps/sec
+            
+            if SystemFuncClass.stop_flag:
+                return
+            
+            # Move Y by 1 step (same speed for synchronized movement)
+            self.xymove.YmoveCorrect(1)
+            sleep(0.01)  # 10ms delay = smooth motion at 100 steps/sec
+        
+        print("[INFO] Centering adjustment complete")
+        
+        if SystemFuncClass.stop_flag:
+                return
+        
         self.CorrectScan(StatusDataClass.roughness, StatusDataClass.xdensity, StatusDataClass.ydensity, c, fn)
         if SystemFuncClass.stop_flag:
             print("Scan stopped after CorrectScan.")
             return  # Exit immediately
-        self.UnloadPos()
+        self.UnloadPosAfterScan()
         
 class GUIClass(PortDefineClass):
     
@@ -1107,11 +1187,20 @@ class GUIClass(PortDefineClass):
         self.mv = IntVar()
         self.mv.set("1")
         self.mov = 1
+        self.xy_mv = IntVar()  # Separate variable for X/Y calibration speed
+        self.xy_mv.set("1")
+        self.xy_mov = 1  # Separate speed setting for X/Y calibration
         self.validator = self.win.register(self.validate_input)
         self.value = 2.0
         self.prev_axis_text = "---"
         self.prev_axis_bg = self.win.cget("bg")
         self.was_scanning = False
+        
+        # Continuous move variables
+        self.continuous_move_active = False
+        self.continuous_move_axis = None
+        self.continuous_move_direction = 0
+        self.continuous_move_pos = None
 
         self.HomeButton = Button(self.win, text = 'HOME', font = self.buttonFont2, command = self.started_homing, height = 2, width = 6, bg='lightgreen', activebackground='lightgreen')
         self.HomeButton.place(x = 10, y = 160)
@@ -1146,15 +1235,40 @@ class GUIClass(PortDefineClass):
         self.UnloadButton = Button(self.win, text = 'Unload', font = self.buttonFont5, command = self.goingto_unloadpos, height = 2, width = 17)
         self.UnloadButton.place(x = 240, y = 250)
         
-        # X/Y offset Move buttons (global - operate on either scan or calibration offsets depending on current position)
-        self.XZOffsetButton = Button(self.win, text = 'X offset Move', font = self.buttonFont, command = self.XZSetPosOffset, height = 1, width = 11)
-        self.XZOffsetButton.place(x = 470, y = 230)
+        # X/Y offset adjustment buttons (hold to continuously move)
+        self.XPlusButton = Button(self.win, text = 'X+', font = self.buttonFont, height = 1, width = 5)
+        self.XPlusButton.place(x = 470, y = 230)
+        self.XPlusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('X', 1))
+        self.XPlusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.ClearOffsetButton = Button(self.win, text = 'Clear\nOffset', font = self.buttonFont, command = self.ClearOffset, height = 3, width = 6)
-        self.ClearOffsetButton.place(x = 670, y = 230)
+        self.XMinusButton = Button(self.win, text = 'X-', font = self.buttonFont, height = 1, width = 5)
+        self.XMinusButton.place(x = 600, y = 230)
+        self.XMinusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('X', -1))
+        self.XMinusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.YOffsetButton = Button(self.win, text = 'Y offset Move', font = self.buttonFont, command = self.YSetPosOffset, height = 1, width = 11)
-        self.YOffsetButton.place(x = 470, y = 285)
+        self.YPlusButton = Button(self.win, text = 'Y+', font = self.buttonFont, height = 1, width = 5)
+        self.YPlusButton.place(x = 470, y = 285)
+        self.YPlusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('Y', 1))
+        self.YPlusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
+        
+        self.YMinusButton = Button(self.win, text = 'Y-', font = self.buttonFont, height = 1, width = 5)
+        self.YMinusButton.place(x = 600, y = 285)
+        self.YMinusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('Y', -1))
+        self.YMinusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
+        
+        self.ClearOffsetButton = Button(self.win, text = 'Clear Offset', font = self.buttonFont4, command = self.ClearOffset, height = 2, width = 10)
+        self.ClearOffsetButton.place(x = 678, y = 175)
+        
+        # X/Y Calibration Speed Radio Buttons (Low and Medium only)
+        self.xy_low = Radiobutton(self.win, text = "Low", font = self.labelFont2, command = lambda: self.xy_movement(self.xy_mv.get()), 
+                                  variable = self.xy_mv, value = 1, bg='#0046ad', fg='white', activebackground='#0046ad', activeforeground='white', 
+                                  selectcolor='#0046ad', highlightthickness=0)
+        self.xy_low.place(x = 720, y = 270)
+        
+        self.xy_med = Radiobutton(self.win, text = "Medium", font = self.labelFont2, command = lambda: self.xy_movement(self.xy_mv.get()), 
+                                variable = self.xy_mv, value = 2, bg='#0046ad', fg='white', activebackground='#0046ad', activeforeground='white', 
+                                selectcolor='#0046ad', highlightthickness=0)
+        self.xy_med.place(x = 720, y = 290)
         
         # NOTE: removed the left-side calibration buttons (and left X/Y position display)
         # The calibration function remains accessible via the MoveCalibButton and the same X/Y offset inputs.
@@ -1178,16 +1292,16 @@ class GUIClass(PortDefineClass):
         self.CalibrateButton.place(x = 10, y = 250)
         
         # Arrow buttons for scanning distance (²/¼) and z-height offset (²/¼)
-        self.up_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.increase_value)
+        self.up_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.increase_value)
         self.up_button.place(x = 590, y = 330)
 
-        self.down_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.decrease_value)
+        self.down_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.decrease_value)
         self.down_button.place(x = 715, y = 330)
         
-        self.inc_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.ZHtUpPosOffset)
+        self.inc_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.ZHtUpPosOffset)
         self.inc_button.place(x = 590, y = 400)
 
-        self.dec_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.ZHtDownPosOffset)
+        self.dec_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.ZHtDownPosOffset)
         self.dec_button.place(x = 675, y = 400)
 
         self.label1 = Label(self.win, text = 'X Offset:', font = self.labelFont, width = 7, bg='#0046ad', fg='white')
@@ -1200,11 +1314,11 @@ class GUIClass(PortDefineClass):
         self.label3.place(x = 480, y = 330)
         
         # Contextual offset display (these show scan offsets or calibration offsets depending on current position)
-        self.label4 = Label(self.win, text = '0', font = self.labelFont, height = 1, width = 10, bg='#0046ad', fg='white')
-        self.label4.place(x = 680, y = 170)
+        self.label4 = Label(self.win, text = '0', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
+        self.label4.place(x = 580, y = 170)
         
-        self.label5 = Label(self.win, text = '0', font = self.labelFont, height = 1, width = 10, bg='#0046ad', fg='white')
-        self.label5.place(x = 680, y = 200)
+        self.label5 = Label(self.win, text = '0', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
+        self.label5.place(x = 580, y = 200)
         
         # left-side z display moved into button; show small ZOffset label
         self.label6 = None  # no separate label for z-height, using self.calib_btn_var instead
@@ -1244,41 +1358,41 @@ class GUIClass(PortDefineClass):
         self.scan_area_value = Label(self.win, text = str(StatusDataClass.roughness), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
         self.scan_area_value.place(x = 110, y = 335)
         
-        self.scan_area_minus = Button(self.win, text = '-', font = self.buttonFont4, command = self.decrease_scan_area, height = 1, width = 2)
-        self.scan_area_minus.place(x = 170, y = 330)
+        self.scan_area_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_scan_area)
+        self.scan_area_minus.place(x = 20, y = 365)
         
-        self.scan_area_plus = Button(self.win, text = '+', font = self.buttonFont4, command = self.increase_scan_area, height = 1, width = 2)
-        self.scan_area_plus.place(x = 210, y = 330)
+        self.scan_area_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_scan_area)
+        self.scan_area_plus.place(x = 80, y = 365)
         
         # X Density controls (number of lines)
-        self.label_x_density = Label(self.win, text = 'X Lines:', font = self.labelFont3, bg='#0046ad', fg='white')
-        self.label_x_density.place(x = 10, y = 360)
+        self.label_x_density = Label(self.win, text = 'X Count:', font = self.labelFont3, bg='#0046ad', fg='white')
+        self.label_x_density.place(x = 160, y = 335)
         
         self.x_density_value = Label(self.win, text = str(StatusDataClass.xdensity), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
-        self.x_density_value.place(x = 110, y = 360)
+        self.x_density_value.place(x = 240, y = 335)
         
-        self.x_density_minus = Button(self.win, text = '-', font = self.buttonFont4, command = self.decrease_x_density, height = 1, width = 2)
-        self.x_density_minus.place(x = 170, y = 355)
+        self.x_density_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_x_density)
+        self.x_density_minus.place(x = 165, y = 365)
         
-        self.x_density_plus = Button(self.win, text = '+', font = self.buttonFont4, command = self.increase_x_density, height = 1, width = 2)
-        self.x_density_plus.place(x = 210, y = 355)
+        self.x_density_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_x_density)
+        self.x_density_plus.place(x = 225, y = 365)
         
         # Y Density controls (points per line)
-        self.label_y_density = Label(self.win, text = 'Y Points:', font = self.labelFont3, bg='#0046ad', fg='white')
-        self.label_y_density.place(x = 10, y = 385)
+        self.label_y_density = Label(self.win, text = 'Y Count:', font = self.labelFont3, bg='#0046ad', fg='white')
+        self.label_y_density.place(x = 300, y = 335)
         
         self.y_density_value = Label(self.win, text = str(StatusDataClass.ydensity), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
-        self.y_density_value.place(x = 110, y = 385)
+        self.y_density_value.place(x = 380, y = 335)
         
-        self.y_density_minus = Button(self.win, text = '-', font = self.buttonFont4, command = self.decrease_y_density, height = 1, width = 2)
-        self.y_density_minus.place(x = 170, y = 380)
+        self.y_density_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_y_density)
+        self.y_density_minus.place(x = 310, y = 365)
         
-        self.y_density_plus = Button(self.win, text = '+', font = self.buttonFont4, command = self.increase_y_density, height = 1, width = 2)
-        self.y_density_plus.place(x = 210, y = 380)
+        self.y_density_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_y_density)
+        self.y_density_plus.place(x = 370, y = 365)
         
         # Grid size display
         self.label_grid_info = Label(self.win, text = f'{StatusDataClass.roughness}mm | {StatusDataClass.xdensity}x{StatusDataClass.ydensity}', font = self.labelFont3, bg='#0046ad', fg='yellow')
-        self.label_grid_info.place(x = 10, y = 410)
+        self.label_grid_info.place(x = 170, y = 313)
 
         self.label15 = Label(self.win, text = 'Run Mode:', font = self.labelFont3, height = 1, width = 10, bg='#0046ad', fg='white')
         self.label15.place(x = 478, y = 70)
@@ -1305,17 +1419,11 @@ class GUIClass(PortDefineClass):
 
         self.label28 = Label(self.win, text = '0', font = self.labelFont3, height = 1, width = 3, bg='#0046ad', fg='white')
         self.label28.place(x = 635, y = 410)
-
-        # X/Y inputs (these are reused for both scan offsets and calibration offsets)
-        self.XPos = Entry(self.win, width = 16, borderwidth=0, validate="key", validatecommand=(self.validator, "%P"))
-        self.XPos.insert(0, 0)
-        self.XPos.place(x = 570, y = 170)
-        self.XPos.bind("<FocusIn>", self.system_func.callback)
         
-        self.YPos = Entry(self.win, width = 16, borderwidth=0, validate="key", validatecommand=(self.validator, "%P"))
-        self.YPos.insert(0, 0)
-        self.YPos.place(x = 570, y = 200)
-        self.YPos.bind("<FocusIn>", self.system_func.callback)
+        self.label29 = Label(self.win, text = "Adjust Speed", font = self.labelFont2, width = 13, bg='#0046ad', fg='yellow')
+        self.label29.place(x = 710, y = 240)
+
+        # X/Y textboxes removed - using hold buttons instead
         
         # removed XCal/YCal entries (left side) as requested
 
@@ -1527,6 +1635,14 @@ class GUIClass(PortDefineClass):
                 print(f"Stopping thread: {thread.name}")
                 thread.join(timeout=0.1)  # Try to exit the thread safely
 
+        # Re-enable scan setting buttons after stop
+        self.scan_area_minus.config(state='normal')
+        self.scan_area_plus.config(state='normal')
+        self.x_density_minus.config(state='normal')
+        self.x_density_plus.config(state='normal')
+        self.y_density_minus.config(state='normal')
+        self.y_density_plus.config(state='normal')
+
         # Start a thread to reset stop_flag after 3 seconds
         threading.Thread(target=self.reset_stop_flag_after_delay, daemon=True).start()
     
@@ -1570,6 +1686,9 @@ class GUIClass(PortDefineClass):
     def movement(self, value):
         self.mov = value
     
+    def xy_movement(self, value):
+        self.xy_mov = value
+    
     def gui_start(self):
         self.win.protocol("WM_DELETE_WINDOW", self.system_func.exitProgram)
         self.win.mainloop()
@@ -1579,12 +1698,6 @@ class GUIClass(PortDefineClass):
         self.system_func.exitProgram()
         self.win.destroy()
         
-    def get_X_offset_val(self):
-        return self.XPos.get()
-
-    def get_Y_offset_val(self):
-        return self.YPos.get()
-    
     def get_filename_val(self):
         return self.fname.get()
     
@@ -1640,6 +1753,14 @@ class GUIClass(PortDefineClass):
         self.label11["text"] = "Scanning"
         self.started_flashing()
         
+        # Disable scan setting buttons during scanning
+        self.scan_area_minus.config(state='disabled')
+        self.scan_area_plus.config(state='disabled')
+        self.x_density_minus.config(state='disabled')
+        self.x_density_plus.config(state='disabled')
+        self.y_density_minus.config(state='disabled')
+        self.y_density_plus.config(state='disabled')
+        
         if self.condition == 1:
             self.start_timer()
             self.data_scan.ScanRoutine(c, fn)
@@ -1689,6 +1810,18 @@ class GUIClass(PortDefineClass):
                 self.label11["text"] = "Home"
         self.scan.config(state='normal')
         self.stopped_flashing()
+        
+        # Re-enable scan setting buttons after scanning
+        self.scan_area_minus.config(state='normal')
+        self.scan_area_plus.config(state='normal')
+        self.x_density_minus.config(state='normal')
+        self.x_density_plus.config(state='normal')
+        self.y_density_minus.config(state='normal')
+        self.y_density_plus.config(state='normal')
+        
+        # Re-enable scanning distance buttons after scanning
+        self.up_button.config(state='normal')
+        self.down_button.config(state='normal')
     
     def init_offset_data(self):
         # Read offsets from file and populate StatusDataClass
@@ -1772,8 +1905,6 @@ class GUIClass(PortDefineClass):
         if self.label11.cget("text") != "Home":
             return
         self.MoveScanButton.config(state='disabled')
-        self.up_button.config(state='disabled')
-        self.down_button.config(state='disabled')
         StatusDataClass.ScanHt = int(float(self.label25.cget("text")) * 10) * 39
         threading.Thread(target=self.goto_scanpos).start()
 
@@ -1832,8 +1963,6 @@ class GUIClass(PortDefineClass):
         # Stop UI Flashing and Enable Controls
         self.stopped_flashing()
         self.UnloadButton.config(state='normal')
-        self.up_button.config(state='normal')
-        self.down_button.config(state='normal')
         self.label11["text"] = "Home"
 
     def goingto_calpos(self):
@@ -1963,47 +2092,69 @@ class GUIClass(PortDefineClass):
         
         self.update_offset_label()
 
-    def XZSetPosOffset(self):
-        # Global X offset setter: acts on scan or calibration offsets depending on current position
+    def start_continuous_move(self, axis, direction):
+        """Start continuous movement when button is held down"""
         current_pos = self.label11.cget("text")
-        try:
-            val = int(self.get_X_offset_val())
-        except Exception:
-            messagebox.showerror("Error", "Invalid X offset value")
-            return
-
-        if current_pos == "Scan Pos":
-            StatusDataClass.x_offset += val
-            self.xy_move.XmoveCorrect(val)
-        elif current_pos == "Calibration Pos":
-            StatusDataClass.xcal_offset += val
-            self.xy_move.XmoveCorrect(val)
-        else:
+        
+        if current_pos not in ["Scan Pos", "Calibration Pos"]:
             messagebox.showerror("Error", "Go to Scan Position or Calibration Position first")
             return
-
-        self.update_offset_label()
+        
+        self.continuous_move_active = True
+        self.continuous_move_axis = axis
+        self.continuous_move_direction = direction
+        self.continuous_move_pos = current_pos
+        
+        # Start the continuous move loop
+        self.do_continuous_move()
     
-    def YSetPosOffset(self):
-        # Global Y offset setter: acts on scan or calibration offsets depending on current position
-        current_pos = self.label11.cget("text")
+    def stop_continuous_move(self):
+        """Stop continuous movement when button is released"""
+        self.continuous_move_active = False
+    
+    def do_continuous_move(self):
+        """Perform one step of continuous movement"""
+        if not self.continuous_move_active:
+            return
+        
         try:
-            val = int(self.get_Y_offset_val())
-        except Exception:
-            messagebox.showerror("Error", "Invalid Y offset value")
-            return
-
-        if current_pos == "Scan Pos":
-            StatusDataClass.y_offset += val
-            self.xy_move.YmoveCorrect2(val)
-        elif current_pos == "Calibration Pos":
-            StatusDataClass.ycal_offset += val
-            self.xy_move.YmoveCorrect2(val)
-        else:
-            messagebox.showerror("Error", "Go to Scan Position or Calibration Position first")
-            return
-
-        self.update_offset_label()
+            # Determine step size based on X/Y calibration speed setting (separate from Z-height speed)
+            if self.xy_mov == 1:  # Low
+                step_size = 1
+            elif self.xy_mov == 2:  # Medium
+                step_size = 10
+            else:  # Fallback to Low
+                step_size = 1
+            
+            # Calculate actual movement
+            move_amount = step_size * self.continuous_move_direction
+            
+            # Move by step_size in the specified direction
+            if self.continuous_move_axis == 'X':
+                self.xy_move.XmoveCorrect(move_amount)
+                if self.continuous_move_pos == "Scan Pos":
+                    StatusDataClass.x_offset += move_amount
+                else:
+                    StatusDataClass.xcal_offset += move_amount
+            else:  # Y axis
+                self.xy_move.YmoveCorrect2(move_amount)
+                if self.continuous_move_pos == "Scan Pos":
+                    StatusDataClass.y_offset += move_amount
+                else:
+                    StatusDataClass.ycal_offset += move_amount
+            
+            # Update the display
+            self.update_offset_label()
+            
+            # Schedule next move with appropriate delay based on speed
+            # Low speed: 100ms delay (10 steps/sec), Medium speed: 50ms delay (20 steps/sec)
+            delay = 100 if self.xy_mov == 1 else 50
+            if self.continuous_move_active:
+                self.win.after(delay, self.do_continuous_move)
+                
+        except Exception as e:
+            print(f"Error during continuous move: {e}")
+            self.continuous_move_active = False
         
     # left-side calibration-specific move functions removed (not used anymore)
 
@@ -2023,39 +2174,39 @@ class GUIClass(PortDefineClass):
     
     # Scan area control methods
     def increase_scan_area(self):
-        if StatusDataClass.roughness < 100:  # Max 100mm
+        if StatusDataClass.roughness < 40:  # Max 40mm
             StatusDataClass.roughness += 10
             self.scan_area_value.config(text=str(StatusDataClass.roughness))
             self.update_grid_display()
     
     def decrease_scan_area(self):
-        if StatusDataClass.roughness > 10:  # Min 10mm
+        if StatusDataClass.roughness > 20:  # Min 20mm
             StatusDataClass.roughness -= 10
             self.scan_area_value.config(text=str(StatusDataClass.roughness))
             self.update_grid_display()
     
     # Scan grid size control methods
     def increase_x_density(self):
-        if StatusDataClass.xdensity < 300:  # Max limit 300
-            StatusDataClass.xdensity += 100
+        if StatusDataClass.xdensity < 200:  # Max limit 200
+            StatusDataClass.xdensity += 50
             self.x_density_value.config(text=str(StatusDataClass.xdensity))
             self.update_grid_display()
     
     def decrease_x_density(self):
         if StatusDataClass.xdensity > 50:  # Min limit 50
-            StatusDataClass.xdensity -= 100
+            StatusDataClass.xdensity -= 50
             self.x_density_value.config(text=str(StatusDataClass.xdensity))
             self.update_grid_display()
     
     def increase_y_density(self):
-        if StatusDataClass.ydensity < 300:  # Max limit 300
-            StatusDataClass.ydensity += 100
+        if StatusDataClass.ydensity < 200:  # Max limit 200
+            StatusDataClass.ydensity += 50
             self.y_density_value.config(text=str(StatusDataClass.ydensity))
             self.update_grid_display()
     
     def decrease_y_density(self):
         if StatusDataClass.ydensity > 50:  # Min limit 50
-            StatusDataClass.ydensity -= 100
+            StatusDataClass.ydensity -= 50
             self.y_density_value.config(text=str(StatusDataClass.ydensity))
             self.update_grid_display()
     
@@ -2064,3 +2215,7 @@ class GUIClass(PortDefineClass):
 
 if __name__ == '__main__':
     main()
+
+
+
+
