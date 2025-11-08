@@ -844,39 +844,41 @@ class DataScanClass:
 
     def UnloadPos(self):
         # Simple unload - just return to home position
-        self.xymove.YmoveCorrect(int(-StatusDataClass.y_offset))
+        #self.xymove.YmoveCorrect(int(-StatusDataClass.y_offset))
         self.xymove.YmoveCorrect(-100)
-        self.xymove.XmoveCorrect(int(-StatusDataClass.x_offset))
-        self.zmove.ZmoveCorrect(int(StatusDataClass.ScanHt) - StatusDataClass.ZOffset)
+        #self.xymove.XmoveCorrect(int(-StatusDataClass.x_offset))
+        #self.zmove.ZmoveCorrect(int(StatusDataClass.ScanHt) - StatusDataClass.ZOffset)
     
     def UnloadPosAfterScan(self):
-        # Unload after scan - includes reversing the centering adjustment
+        # Unload after scan - return to starting position before unloading
+        # Move back by the same amount we moved forward during centering
         scan_area_mm = StatusDataClass.roughness
         half_area_steps = int((scan_area_mm / 2) * 20)  # Convert mm to steps (20 steps per mm)
         
+        print(f"[INFO] Returning to start position: Moving back {scan_area_mm/2}mm ({half_area_steps} steps)")
+        
         # Move X and Y axes back SLOWLY and SMOOTHLY by half the scan area
-        # Move 1 step at a time with small delays for smooth continuous motion
+        # Move in NEGATIVE direction to undo the centering movement
         remaining_steps = half_area_steps
         
         for step in range(remaining_steps):
             if SystemFuncClass.stop_flag:
                 return
             
-            # Move X back by 1 step
+            # Move X back by 1 step (NEGATIVE direction)
             self.xymove.XmoveCorrect(-1)
-            sleep(0.01)  # 10ms delay = smooth motion at 100 steps/sec
+            sleep(0.005)  # 5ms delay = smooth motion at 200 steps/sec
             
             if SystemFuncClass.stop_flag:
                 return
             
-            # Move Y back by 1 step (same speed for synchronized movement)
+            # Move Y back by 1 step (NEGATIVE direction)
             self.xymove.YmoveCorrect(-1)
-            sleep(0.01)  # 10ms delay = smooth motion at 100 steps/sec
+            sleep(0.005)  # 5ms delay = smooth motion at 200 steps/sec
         
-        print("[INFO] Returning to center position complete")
+        print("[INFO] Returned to starting position - now unloading")
         
         # Then return to home position
-        self.UnloadPos()
 
     def UnloadPos_stopped(self):
         self.home.Yhome()
@@ -1026,8 +1028,9 @@ class DataScanClass:
                 return  # Immediately exit scan
             
             #dassyutujouken
-            if x_pos == xdensity :
-                self.xymove.XmoveCorrect(x_step * 100)
+            if x_pos > xdensity :
+                # Move X back to starting position (compensate for all the -x_step movements)
+                self.xymove.XmoveCorrect(x_step * (xdensity + 1))
                 if SystemFuncClass.stop_flag:
                     print("STOP detected in CorrectScan - Exiting!")
                     return  # Immediately exit scan
@@ -1124,14 +1127,14 @@ class DataScanClass:
             
             # Move X by 1 step
             self.xymove.XmoveCorrect(1)
-            sleep(0.01)  # 10ms delay = smooth motion at 100 steps/sec
+            sleep(0.005)  # 5ms delay = smooth motion at 200 steps/sec
             
             if SystemFuncClass.stop_flag:
                 return
             
             # Move Y by 1 step (same speed for synchronized movement)
             self.xymove.YmoveCorrect(1)
-            sleep(0.01)  # 10ms delay = smooth motion at 100 steps/sec
+            sleep(0.005)  # 5ms delay = smooth motion at 200 steps/sec
         
         print("[INFO] Centering adjustment complete")
         
@@ -1142,6 +1145,7 @@ class DataScanClass:
         if SystemFuncClass.stop_flag:
             print("Scan stopped after CorrectScan.")
             return  # Exit immediately
+        self.UnloadPos()
         self.UnloadPosAfterScan()
         
 class GUIClass(PortDefineClass):
@@ -1292,16 +1296,16 @@ class GUIClass(PortDefineClass):
         self.CalibrateButton.place(x = 10, y = 250)
         
         # Arrow buttons for scanning distance (²/¼) and z-height offset (²/¼)
-        self.up_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.increase_value)
+        self.up_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.increase_value)
         self.up_button.place(x = 590, y = 330)
 
-        self.down_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.decrease_value)
+        self.down_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.decrease_value)
         self.down_button.place(x = 715, y = 330)
         
-        self.inc_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.ZHtUpPosOffset)
+        self.inc_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.ZHtUpPosOffset)
         self.inc_button.place(x = 590, y = 400)
 
-        self.dec_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.ZHtDownPosOffset)
+        self.dec_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.ZHtDownPosOffset)
         self.dec_button.place(x = 675, y = 400)
 
         self.label1 = Label(self.win, text = 'X Offset:', font = self.labelFont, width = 7, bg='#0046ad', fg='white')
@@ -1358,10 +1362,10 @@ class GUIClass(PortDefineClass):
         self.scan_area_value = Label(self.win, text = str(StatusDataClass.roughness), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
         self.scan_area_value.place(x = 110, y = 335)
         
-        self.scan_area_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_scan_area)
+        self.scan_area_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_scan_area)
         self.scan_area_minus.place(x = 20, y = 365)
         
-        self.scan_area_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_scan_area)
+        self.scan_area_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_scan_area)
         self.scan_area_plus.place(x = 80, y = 365)
         
         # X Density controls (number of lines)
@@ -1371,10 +1375,10 @@ class GUIClass(PortDefineClass):
         self.x_density_value = Label(self.win, text = str(StatusDataClass.xdensity), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
         self.x_density_value.place(x = 240, y = 335)
         
-        self.x_density_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_x_density)
+        self.x_density_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_x_density)
         self.x_density_minus.place(x = 165, y = 365)
         
-        self.x_density_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_x_density)
+        self.x_density_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_x_density)
         self.x_density_plus.place(x = 225, y = 365)
         
         # Y Density controls (points per line)
@@ -1384,10 +1388,10 @@ class GUIClass(PortDefineClass):
         self.y_density_value = Label(self.win, text = str(StatusDataClass.ydensity), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
         self.y_density_value.place(x = 380, y = 335)
         
-        self.y_density_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_y_density)
+        self.y_density_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_y_density)
         self.y_density_minus.place(x = 310, y = 365)
         
-        self.y_density_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_y_density)
+        self.y_density_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_y_density)
         self.y_density_plus.place(x = 370, y = 365)
         
         # Grid size display
@@ -1421,7 +1425,7 @@ class GUIClass(PortDefineClass):
         self.label28.place(x = 635, y = 410)
         
         self.label29 = Label(self.win, text = "Adjust Speed", font = self.labelFont2, width = 13, bg='#0046ad', fg='yellow')
-        self.label29.place(x = 710, y = 240)
+        self.label29.place(x = 705, y = 240)
 
         # X/Y textboxes removed - using hold buttons instead
         
@@ -2148,7 +2152,7 @@ class GUIClass(PortDefineClass):
             
             # Schedule next move with appropriate delay based on speed
             # Low speed: 100ms delay (10 steps/sec), Medium speed: 50ms delay (20 steps/sec)
-            delay = 100 if self.xy_mov == 1 else 50
+            delay = 100 if self.xy_mov == 1 else 100
             if self.continuous_move_active:
                 self.win.after(delay, self.do_continuous_move)
                 
@@ -2174,39 +2178,39 @@ class GUIClass(PortDefineClass):
     
     # Scan area control methods
     def increase_scan_area(self):
-        if StatusDataClass.roughness < 40:  # Max 40mm
-            StatusDataClass.roughness += 10
+        if StatusDataClass.roughness < 50:  # Max 40mm
+            StatusDataClass.roughness += 5
             self.scan_area_value.config(text=str(StatusDataClass.roughness))
             self.update_grid_display()
     
     def decrease_scan_area(self):
         if StatusDataClass.roughness > 20:  # Min 20mm
-            StatusDataClass.roughness -= 10
+            StatusDataClass.roughness -= 5
             self.scan_area_value.config(text=str(StatusDataClass.roughness))
             self.update_grid_display()
     
     # Scan grid size control methods
     def increase_x_density(self):
         if StatusDataClass.xdensity < 200:  # Max limit 200
-            StatusDataClass.xdensity += 50
+            StatusDataClass.xdensity += 100
             self.x_density_value.config(text=str(StatusDataClass.xdensity))
             self.update_grid_display()
     
     def decrease_x_density(self):
-        if StatusDataClass.xdensity > 50:  # Min limit 50
-            StatusDataClass.xdensity -= 50
+        if StatusDataClass.xdensity > 100:  # Min limit 50
+            StatusDataClass.xdensity -= 100
             self.x_density_value.config(text=str(StatusDataClass.xdensity))
             self.update_grid_display()
     
     def increase_y_density(self):
         if StatusDataClass.ydensity < 200:  # Max limit 200
-            StatusDataClass.ydensity += 50
+            StatusDataClass.ydensity += 100
             self.y_density_value.config(text=str(StatusDataClass.ydensity))
             self.update_grid_display()
     
     def decrease_y_density(self):
-        if StatusDataClass.ydensity > 50:  # Min limit 50
-            StatusDataClass.ydensity -= 50
+        if StatusDataClass.ydensity > 100:  # Min limit 50
+            StatusDataClass.ydensity -= 100
             self.y_density_value.config(text=str(StatusDataClass.ydensity))
             self.update_grid_display()
     
@@ -2215,6 +2219,7 @@ class GUIClass(PortDefineClass):
 
 if __name__ == '__main__':
     main()
+
 
 
 

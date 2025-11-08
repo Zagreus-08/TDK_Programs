@@ -37,6 +37,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 # ---------------- Global vars ----------------
 x, y, z = [], [], []
 zmin, zmax = -0.1, 0.1
+fixed_zmin, fixed_zmax = -0.1, 0.1  # Fixed range for colorbar when locked
+use_fixed_range = False  # Toggle for fixed vs auto colorbar range
 x_range = 100  # Default X-axis range (50-300)
 y_max = 100    # Auto-detected Y-axis maximum from hardware
 raw_file = None
@@ -44,13 +46,15 @@ csv_writer = None
 current_filename = None
 loaded_filename = None   # Track filename of loaded raw data for saving
 pause_live = False       # used when user loads a CSV and wants to pause live updates
-scan_active = True       # True while an active scan is happening; becomes False after end-of-scan (100,100)
+scan_active = False      # True while an active scan is happening; becomes False after end-of-scan
 last_data_time = time.time()  # Track when we last received serial data
 
 # ---------------- Image ----------------
-im_Migne = plt.imread(
-    '/home/pi/Desktop/Migne_black_frameless.png'
-)
+try:
+    im_Migne = plt.imread('/home/pi/Desktop/Migne_black_frameless.png')
+except FileNotFoundError:
+    print("[WARNING] Migne image not found, creating blank placeholder")
+    im_Migne = np.ones((100, 100, 4)) * 0.5  # Gray placeholder
 
 # ---------------- Serial ----------------
 try:
@@ -123,7 +127,8 @@ def start_new_raw_file(name_hint=""):
 
     raw_dir = '/home/pi/Shared/raw_data'
     os.makedirs(raw_dir, exist_ok=True)
-    raw_path = os.path.join(raw_dir, f"{name_hint}.csv")
+    # Add "raw_" prefix for consistency
+    raw_path = os.path.join(raw_dir, f"raw_{name_hint}.csv")
 
     try:
         raw_file = open(raw_path, "w", newline="")
@@ -211,10 +216,13 @@ def read_loop():
             x.clear()
             y.clear()
             z.clear()
-            scan_active = True
+            scan_active = False  # Will be set to True when (0,0) is received
             filename_from_serial = ""
-            # Reset plot to blank and disable buttons
-            root.after(0, lambda: (resume_live(), set_controls_state("disabled")))
+            # Reset plot to blank and disable buttons - use thread-safe call
+            def resume_and_disable():
+                resume_live()
+                set_controls_state("disabled")
+            root.after(0, resume_and_disable)
 
         # ---------- New scan detection (0,0 marks start of scan) ----------
         if x0 == 0 and y0 == 0:
@@ -250,7 +258,9 @@ def read_loop():
             print(f"[INFO] Reset color bar range to zmin={zmin}, zmax={zmax}")
 
             # Disable Load/Resume buttons during scanning
-            root.after(0, lambda: set_controls_state("disabled"))
+            def disable_controls():
+                set_controls_state("disabled")
+            root.after(0, disable_controls)
 
             # Detect filename sent by 1st program (should come with or after 0,0)
             if len(parts) >= 4:
@@ -267,17 +277,8 @@ def read_loop():
             start_new_raw_file(filename_from_serial)
             print(f"[INFO] Started raw file with filename: {filename_from_serial}")
 
-        # Auto-detect X and Y axis maximums from incoming data (independently)
-        if x0 > 0 and x0 <= 300:  # Reasonable range check for X
-            detected_x_max = max(x0, x_range if x_range > 100 else 100)
-            # Auto-adjust x_range during live scan (round to nearest 50)
-            new_x_range = max(50, min(300, ((int(detected_x_max) + 49) // 50) * 50))
-            if new_x_range != x_range:
-                x_range = new_x_range
-                print(f"[INFO] Auto-adjusted x_range to: {x_range}")
-
-        if y0 > 0 and y0 <= 300:  # Reasonable range check for Y
-            y_max = max(y_max, y0)
+        # Track maximum X and Y values during scan (don't update display yet)
+        # We'll update both at the end of scan to keep them synchronized
 
         data_cnt += 1
 
@@ -303,10 +304,16 @@ def read_loop():
 
         # ---------- End of scan ----------
         # Detect end of scan: hardware sends matching max values (e.g., 100,100 or 200,200)
-        # Check if both x0 and y0 are at their detected maximums (within tolerance)
-        # Only trigger if we have enough data points (avoid false positives)
-        if scan_active and data_cnt > 50 and ((abs(x0 - x_range) <= 1 and abs(y0 - y_max) <= 1) or (x0 == y0 and x0 >= 100 and x0 == y_max)):
+        # Check if x0 and y0 are equal and within valid range (with tolerance for floating point)
+        if scan_active and data_cnt > 50 and abs(x0 - y0) <= 1 and x0 >= 50 and x0 <= 300:
             print(f"[INFO] End of scan detected at ({x0},{y0}). Finalizing scan...")
+            
+            # Set BOTH x_range and y_max to the same value (synchronized square scan)
+            # Round to nearest valid size (50, 100, 150, 200, 250, 300)
+            detected_size = int(round(x0))
+            x_range = detected_size
+            y_max = detected_size
+            print(f"[INFO] Scan dimensions set to: {x_range}x{y_max}")
             
             try:
                 if filename_from_serial:
@@ -326,7 +333,10 @@ def read_loop():
                     save_path = os.path.join(save_dir, filename_from_serial + ".png")
                     print(f"[INFO] Scan complete, attempting to save to: {save_path}")
                     # Save directly in main thread using root.after to ensure thread safety
-                    root.after(0, lambda: save_figure_direct(save_path))
+                    # Use a proper function reference to avoid lambda closure issues
+                    def save_scan_image():
+                        save_figure_direct(save_path)
+                    root.after(0, save_scan_image)
             except Exception as e:
                 print("[ERROR] Could not save image:", e)
 
@@ -347,7 +357,9 @@ def read_loop():
             
             # Re-enable Load/Resume buttons after scan finishes
             print("[INFO] Re-enabling buttons after scan completion")
-            root.after(0, lambda: set_controls_state("normal"))
+            def enable_controls():
+                set_controls_state("normal")
+            root.after(0, enable_controls)
             
             # Reset last_data_time to trigger timeout mechanism
             last_data_time = time.time()
@@ -424,25 +436,30 @@ def update(i, xt, yt, zt, zmin_arg, zmax_arg):
     # Allow updates when paused (for loaded data) or when we have data
     if pause_live or len(x) < 2:
         return
-    xs = copy.copy(x)
-    ys = copy.copy(y)
-    zs = copy.copy(z)
-    if len(xs) != len(zs):
-        diff = len(xs) - len(zs)
-        if diff > 0:
-            xs = xs[diff:]
-            ys = ys[diff:]
+    # Convert to numpy arrays for efficient processing
+    xs = np.array(copy.copy(x))
+    ys = np.array(copy.copy(y))
+    zs = np.array(copy.copy(z))
+    
+    # Ensure all arrays have same length
+    min_len = min(len(xs), len(ys), len(zs))
+    if min_len == 0:
+        return
+    xs = xs[:min_len]
+    ys = ys[:min_len]
+    zs = zs[:min_len]
 
-    # Filter and scale data based on x_range (zoom/crop feature)
+    # Filter and scale data based on x_range (zoom/crop feature) - use numpy for efficiency
     # Only show data where X <= x_range (filter for any x_range value)
-    mask = [xi <= x_range for xi in xs]
-    xs = [xs[i] for i in range(len(xs)) if mask[i]]
-    ys = [ys[i] for i in range(len(ys)) if mask[i]]
-    zs = [zs[i] for i in range(len(zs)) if mask[i]]
+    mask = xs <= x_range
+    xs = xs[mask]
+    ys = ys[mask]
+    zs = zs[mask]
 
     # Scale X and Y coordinates to fit in 0-100 display range
-    xs = [xi * 100 / x_range for xi in xs]
-    ys = [yi * 100 / y_max for yi in ys]
+    if x_range > 0 and y_max > 0:
+        xs = xs * 100 / x_range
+        ys = ys * 100 / y_max
 
     if len(xs) < 2 or len(np.unique(xs)) < 2 or len(np.unique(ys)) < 2:
         return
@@ -457,11 +474,16 @@ def update(i, xt, yt, zt, zmin_arg, zmax_arg):
     # Calculate current data range
     local_max, local_min = np.nanmax(z_new), np.nanmin(z_new)
     
-    # Expand zmin/zmax as needed to accommodate all data
-    if local_max > zmax:
-        zmax = local_max
-    if local_min < zmin:
-        zmin = local_min
+    # Use fixed range if enabled, otherwise auto-expand
+    if use_fixed_range:
+        zmin = fixed_zmin
+        zmax = fixed_zmax
+    else:
+        # Expand zmin/zmax as needed to accommodate all data
+        if local_max > zmax:
+            zmax = local_max
+        if local_min < zmin:
+            zmin = local_min
 
     z_max = max(zs) if zs else 0
     z_min = min(zs) if zs else 0
@@ -497,6 +519,7 @@ def update(i, xt, yt, zt, zmin_arg, zmax_arg):
     display_name = ""
     if current_filename:
         base_name = os.path.splitext(os.path.basename(current_filename))[0]
+        # Remove "raw_" prefix if present for cleaner display
         if base_name.startswith("raw_"):
             base_name = base_name[4:]
         display_name = f"Live Scan: {base_name}"
@@ -594,22 +617,30 @@ def load_raw_data():
         loaded_filename = None
 
 def show_loaded(xs, ys, zs):
-    global zmin, zmax, ax, axh, axm, cax, x_range, y_max
+    global zmin, zmax, ax, axh, axm, cax, x_range, y_max, use_fixed_range, fixed_zmin, fixed_zmax
 
     if len(xs) == 0 or len(ys) == 0:
         messagebox.showerror("Error", "Loaded CSV has no data.")
         return
 
-    # Auto-detect X and Y axis maximums from loaded data
+    # Auto-detect scan dimensions from loaded data
     detected_x_max = int(np.max(xs)) if len(xs) > 0 else 100
     detected_y_max = int(np.max(ys)) if len(ys) > 0 else 100
 
-    # Auto-adjust x_range to match loaded data (round to nearest 50)
-    x_range = max(50, min(300, ((detected_x_max + 49) // 50) * 50))
-    y_max = detected_y_max
+    # For loaded data, use actual dimensions (they should match for square scans)
+    # If they don't match, use the maximum to ensure all data is visible
+    if abs(detected_x_max - detected_y_max) <= 5:
+        # They're close enough - use the average
+        detected_size = int((detected_x_max + detected_y_max) / 2)
+    else:
+        # They differ significantly - use maximum to show all data
+        detected_size = max(detected_x_max, detected_y_max)
+    
+    x_range = detected_size
+    y_max = detected_size
 
-    print(f"[INFO] Detected X-max: {detected_x_max}, adjusted x_range to: {x_range}")
-    print(f"[INFO] Detected Y-max: {detected_y_max}, y_max set to: {y_max}")
+    print(f"[INFO] Loaded data dimensions: {detected_x_max}x{detected_y_max}")
+    print(f"[INFO] Display set to: {x_range}x{y_max}")
 
     # Filter and scale data based on x_range (zoom/crop feature)
     # Only show data where X <= x_range (filter for any x_range value)
@@ -622,7 +653,12 @@ def show_loaded(xs, ys, zs):
     xs = xs * 100 / x_range
     ys = ys * 100 / y_max
 
-    zmin, zmax = np.min(zs), np.max(zs)
+    # Use fixed range if enabled, otherwise use data range
+    if use_fixed_range:
+        zmin = fixed_zmin
+        zmax = fixed_zmax
+    else:
+        zmin, zmax = np.min(zs), np.max(zs)
 
     fig.clf()
     spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
@@ -709,15 +745,18 @@ def show_loaded(xs, ys, zs):
 
 def resume_live():
     """Reset the plot to blank display and clear all data"""
-    global pause_live, x, y, z, zmin, zmax, ax, axh, axm, cax, loaded_filename
+    global pause_live, x, y, z, zmin, zmax, ax, axh, axm, cax, loaded_filename, use_fixed_range, fixed_zmin, fixed_zmax
     pause_live = False
     loaded_filename = None  # Clear loaded filename when resuming live
     # Clear all data buffers
     x.clear()
     y.clear()
     z.clear()
-    # Reset z-axis limits to default
-    zmin, zmax = -0.1, 0.1
+    # Reset z-axis limits to default (or fixed if enabled)
+    if use_fixed_range:
+        zmin, zmax = fixed_zmin, fixed_zmax
+    else:
+        zmin, zmax = -0.1, 0.1
 
     # Recreate the figure structure (same as in GUI setup)
     fig.clf()
@@ -888,6 +927,116 @@ if __name__ == '__main__':
     range_note = tk.Label(controls_frame, text="Range: Auto 50-300 (X/Y synced)", 
                          font=("Arial", 8), bg="#d9d9d9", fg="#666666")
     range_note.pack(pady=(2, 4))
+
+    # Separator line
+    separator2 = tk.Frame(controls_frame, height=2, bg="#999999")
+    separator2.pack(pady=8, fill=tk.X)
+
+    # Fixed Colorbar Range Controls
+    colorbar_label = tk.Label(controls_frame, text="Colorbar Range", 
+                             font=("Arial", 10, "bold"), bg="#d9d9d9")
+    colorbar_label.pack(pady=(4, 2))
+
+    # Checkbox for fixed range
+    fixed_range_var = tk.BooleanVar(value=False)
+    
+    def toggle_fixed_range():
+        global use_fixed_range, fixed_zmin, fixed_zmax, zmin, zmax
+        use_fixed_range = fixed_range_var.get()
+        if use_fixed_range:
+            # Set fixed range to current range when enabling
+            fixed_zmin = zmin
+            fixed_zmax = zmax
+            zmin_label.config(text=f"Min: {fixed_zmin:.3f}")
+            zmax_label.config(text=f"Max: {fixed_zmax:.3f}")
+            print(f"[INFO] Fixed colorbar range enabled: {fixed_zmin:.3f} to {fixed_zmax:.3f}")
+        else:
+            print("[INFO] Auto colorbar range enabled")
+    
+    fixed_check = tk.Checkbutton(controls_frame, text="Lock Range", 
+                                 variable=fixed_range_var, command=toggle_fixed_range,
+                                 font=("Arial", 9), bg="#d9d9d9", activebackground="#d9d9d9")
+    fixed_check.pack(pady=2)
+
+    # Z-Min controls
+    zmin_frame = tk.Frame(controls_frame, bg="#d9d9d9")
+    zmin_frame.pack(pady=2, fill=tk.X)
+    
+    zmin_label = tk.Label(zmin_frame, text=f"Min: {fixed_zmin:.3f}", 
+                         font=("Arial", 9), bg="#d9d9d9", width=12)
+    zmin_label.pack(side=tk.LEFT, padx=2)
+    
+    def decrease_zmin():
+        global fixed_zmin, zmin
+        fixed_zmin -= 0.1
+        zmin_label.config(text=f"Min: {fixed_zmin:.3f}")
+        # Always update zmin immediately, regardless of checkbox state
+        zmin = fixed_zmin
+        print(f"[INFO] Z-Min set to: {fixed_zmin:.3f}")
+    
+    def increase_zmin():
+        global fixed_zmin, zmin
+        if fixed_zmin < fixed_zmax - 0.1:  # Ensure min < max
+            fixed_zmin += 0.1
+            zmin_label.config(text=f"Min: {fixed_zmin:.3f}")
+            # Always update zmin immediately, regardless of checkbox state
+            zmin = fixed_zmin
+            print(f"[INFO] Z-Min set to: {fixed_zmin:.3f}")
+    
+    zmin_down = tk.Button(zmin_frame, text="−", command=decrease_zmin, 
+                         font=("Arial", 10, "bold"), width=2, height=1)
+    zmin_down.pack(side=tk.LEFT, padx=1)
+    
+    zmin_up = tk.Button(zmin_frame, text="+", command=increase_zmin, 
+                       font=("Arial", 10, "bold"), width=2, height=1)
+    zmin_up.pack(side=tk.LEFT, padx=1)
+
+    # Z-Max controls
+    zmax_frame = tk.Frame(controls_frame, bg="#d9d9d9")
+    zmax_frame.pack(pady=2, fill=tk.X)
+    
+    zmax_label = tk.Label(zmax_frame, text=f"Max: {fixed_zmax:.3f}", 
+                         font=("Arial", 9), bg="#d9d9d9", width=12)
+    zmax_label.pack(side=tk.LEFT, padx=2)
+    
+    def decrease_zmax():
+        global fixed_zmax, zmax
+        if fixed_zmax > fixed_zmin + 0.1:  # Ensure max > min
+            fixed_zmax -= 0.1
+            zmax_label.config(text=f"Max: {fixed_zmax:.3f}")
+            # Always update zmax immediately, regardless of checkbox state
+            zmax = fixed_zmax
+            print(f"[INFO] Z-Max set to: {fixed_zmax:.3f}")
+    
+    def increase_zmax():
+        global fixed_zmax, zmax
+        fixed_zmax += 0.1
+        zmax_label.config(text=f"Max: {fixed_zmax:.3f}")
+        # Always update zmax immediately, regardless of checkbox state
+        zmax = fixed_zmax
+        print(f"[INFO] Z-Max set to: {fixed_zmax:.3f}")
+    
+    zmax_down = tk.Button(zmax_frame, text="−", command=decrease_zmax, 
+                         font=("Arial", 10, "bold"), width=2, height=1)
+    zmax_down.pack(side=tk.LEFT, padx=1)
+    
+    zmax_up = tk.Button(zmax_frame, text="+", command=increase_zmax, 
+                       font=("Arial", 10, "bold"), width=2, height=1)
+    zmax_up.pack(side=tk.LEFT, padx=1)
+
+    # Reset button for colorbar range
+    def reset_colorbar_range():
+        global fixed_zmin, fixed_zmax, zmin, zmax
+        fixed_zmin, fixed_zmax = -0.1, 0.1
+        zmin_label.config(text=f"Min: {fixed_zmin:.3f}")
+        zmax_label.config(text=f"Max: {fixed_zmax:.3f}")
+        if use_fixed_range:
+            zmin, zmax = fixed_zmin, fixed_zmax
+        print("[INFO] Colorbar range reset to default: -0.1 to 0.1")
+    
+    reset_range_btn = tk.Button(controls_frame, text="Reset Range", command=reset_colorbar_range,
+                                font=("Arial", 9), bg="#f2f2f2", width=12, height=1)
+    reset_range_btn.pack(pady=4)
 
     # Initially enabled (buttons start enabled when no scan is active)
     set_controls_state("normal")
