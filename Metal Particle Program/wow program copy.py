@@ -84,7 +84,7 @@ class StatusDataClass:
     xdensity = 100  # Number of lines (X direction)
     ydensity = 100  # Points per line (Y direction)
     roughness = 20  # Scanning area size (mm) - default 20mm
-    resolution = 10000  # Total data points (100x100=10,000 or 200x200=40,000)
+    resolution = 10000  # Total data points (100x100=10,000, 150x150=22,500, or 200x200=40,000)
 
 class SerialDataComClass:
     def __init__(self):
@@ -1298,22 +1298,22 @@ class GUIClass(PortDefineClass):
         self.UnloadButton.place(x = 240, y = 250)
         
         # X/Y offset adjustment buttons (hold to continuously move)
-        self.XPlusButton = Button(self.win, text = '', font = self.buttonFont, height = 1, width = 2)
+        self.XPlusButton = Button(self.win, text = '→', font = self.buttonFont, height = 1, width = 2)
         self.XPlusButton.place(x = 600, y = 245)
         self.XPlusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('X', 1))
         self.XPlusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.XMinusButton = Button(self.win, text = '', font = self.buttonFont, height = 1, width = 2)
+        self.XMinusButton = Button(self.win, text = '←', font = self.buttonFont, height = 1, width = 2)
         self.XMinusButton.place(x = 470, y = 245)
         self.XMinusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('X', -1))
         self.XMinusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.YPlusButton = Button(self.win, text = '', font = self.buttonFont, height = 1, width = 2)
+        self.YPlusButton = Button(self.win, text = '↑', font = self.buttonFont, height = 1, width = 2)
         self.YPlusButton.place(x = 535, y = 210)
         self.YPlusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('Y', 1))
         self.YPlusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.YMinusButton = Button(self.win, text = '', font = self.buttonFont, height = 1, width = 2)
+        self.YMinusButton = Button(self.win, text = '↓', font = self.buttonFont, height = 1, width = 2)
         self.YMinusButton.place(x = 535, y = 275)
         self.YMinusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('Y', -1))
         self.YMinusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
@@ -1354,16 +1354,16 @@ class GUIClass(PortDefineClass):
         self.CalibrateButton.place(x = 10, y = 250)
         
         # Arrow buttons for scanning distance (²/¼) and z-height offset (²/¼)
-        self.up_button = Button(self.win, text='', font=("Helvetica", 20), command=self.increase_value)
+        self.up_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.increase_value)
         self.up_button.place(x = 590, y = 330)
 
-        self.down_button = Button(self.win, text='', font=("Helvetica", 20), command=self.decrease_value)
+        self.down_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.decrease_value)
         self.down_button.place(x = 715, y = 330)
         
-        self.inc_button = Button(self.win, text='', font=("Helvetica", 20), command=self.ZHtUpPosOffset)
+        self.inc_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.ZHtUpPosOffset)
         self.inc_button.place(x = 590, y = 400)
 
-        self.dec_button = Button(self.win, text='', font=("Helvetica", 20), command=self.ZHtDownPosOffset)
+        self.dec_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.ZHtDownPosOffset)
         self.dec_button.place(x = 675, y = 400)
 
         self.label1 = Label(self.win, text = 'X Offset:', font = self.labelFont, width = 7, bg='#0046ad', fg='white')
@@ -1376,10 +1376,10 @@ class GUIClass(PortDefineClass):
         self.label3.place(x = 480, y = 330)
         
         # Contextual offset display (these show scan offsets or calibration offsets depending on current position)
-        self.label4 = Label(self.win, text = '0', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
+        self.label4 = Label(self.win, text = '---', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
         self.label4.place(x = 580, y = 150)
         
-        self.label5 = Label(self.win, text = '0', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
+        self.label5 = Label(self.win, text = '---', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
         self.label5.place(x = 580, y = 180)
         
         # left-side z display moved into button; show small ZOffset label
@@ -1420,51 +1420,33 @@ class GUIClass(PortDefineClass):
         self.scan_area_value = Label(self.win, text = str(StatusDataClass.roughness), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
         self.scan_area_value.place(x = 110, y = 335)
         
-        self.scan_area_minus = Button(self.win, text = '', font=("Helvetica", 20), command = self.decrease_scan_area)
+        self.scan_area_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_scan_area)
         self.scan_area_minus.place(x = 20, y = 365)
         
-        self.scan_area_plus = Button(self.win, text = '', font=("Helvetica", 20), command = self.increase_scan_area)
+        self.scan_area_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_scan_area)
         self.scan_area_plus.place(x = 80, y = 365)
         
         # Resolution controls
-        self.label_resolution = Label(self.win, text = 'Resolution:', font = self.labelFont3, bg='#0046ad', fg='white')
-        self.label_resolution.place(x = 10, y = 405)
+        self.label_resolution = Label(self.win, text = 'Datapoints:', font = self.labelFont3, bg='#0046ad', fg='white')
+        self.label_resolution.place(x = 150, y = 335)
         
         self.res_100 = Radiobutton(self.win, text = "100x100", font = self.labelFont2, command = lambda: self.set_resolution(self.res.get()), 
                                   variable = self.res, value = 1, bg='#0046ad', fg='white', activebackground='#0046ad', activeforeground='white', 
                                   selectcolor='#0046ad', highlightthickness=0)
-        self.res_100.place(x = 110, y = 405)
+        self.res_100.place(x = 260, y = 335)
         
-        self.res_200 = Radiobutton(self.win, text = "200x200", font = self.labelFont2, command = lambda: self.set_resolution(self.res.get()), 
+        self.res_150 = Radiobutton(self.win, text = "150x150", font = self.labelFont2, command = lambda: self.set_resolution(self.res.get()), 
                                   variable = self.res, value = 2, bg='#0046ad', fg='white', activebackground='#0046ad', activeforeground='white', 
                                   selectcolor='#0046ad', highlightthickness=0)
-        self.res_200.place(x = 190, y = 405)
+        self.res_150.place(x = 340, y = 335)
         
-        # OLD X/Y density controls removed - now using resolution radio buttons above
-        self.x_density_value = Label(self.win, text = str(StatusDataClass.xdensity), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
-        self.x_density_value.place(x = 240, y = 335)
-        
-        self.x_density_minus = Button(self.win, text = '', font=("Helvetica", 20), command = self.decrease_x_density)
-        self.x_density_minus.place(x = 165, y = 365)
-        
-        self.x_density_plus = Button(self.win, text = '', font=("Helvetica", 20), command = self.increase_x_density)
-        self.x_density_plus.place(x = 225, y = 365)
-        
-        # Y Density controls (points per line)
-        self.label_y_density = Label(self.win, text = 'Y Count:', font = self.labelFont3, bg='#0046ad', fg='white')
-        self.label_y_density.place(x = 300, y = 335)
-        
-        self.y_density_value = Label(self.win, text = str(StatusDataClass.ydensity), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
-        self.y_density_value.place(x = 380, y = 335)
-        
-        self.y_density_minus = Button(self.win, text = '', font=("Helvetica", 20), command = self.decrease_y_density)
-        self.y_density_minus.place(x = 310, y = 365)
-        
-        self.y_density_plus = Button(self.win, text = '', font=("Helvetica", 20), command = self.increase_y_density)
-        self.y_density_plus.place(x = 370, y = 365)
+        self.res_200 = Radiobutton(self.win, text = "200x200", font = self.labelFont2, command = lambda: self.set_resolution(self.res.get()), 
+                                  variable = self.res, value = 3, bg='#0046ad', fg='white', activebackground='#0046ad', activeforeground='white', 
+                                  selectcolor='#0046ad', highlightthickness=0)
+        self.res_200.place(x = 420, y = 335)
         
         # Grid size display
-        self.label_grid_info = Label(self.win, text = f'{StatusDataClass.roughness}mm | {StatusDataClass.xdensity}x{StatusDataClass.ydensity}', font = self.labelFont3, bg='#0046ad', fg='yellow')
+        self.label_grid_info = Label(self.win, text = f'{StatusDataClass.roughness}mm | {StatusDataClass.xdensity}x{StatusDataClass.ydensity} ({StatusDataClass.resolution:,} pts)', font = self.labelFont3, bg='#0046ad', fg='yellow')
         self.label_grid_info.place(x = 170, y = 313)
 
         self.label15 = Label(self.win, text = 'Run Mode:', font = self.labelFont3, height = 1, width = 10, bg='#0046ad', fg='white')
@@ -1722,8 +1704,8 @@ class GUIClass(PortDefineClass):
         self.scan_area_minus.config(state='normal')
         self.scan_area_plus.config(state='normal')
         self.res_100.config(state='normal')
+        self.res_150.config(state='normal')
         self.res_200.config(state='normal')
-
         # Start a thread to reset stop_flag after 3 seconds
         threading.Thread(target=self.reset_stop_flag_after_delay, daemon=True).start()
     
@@ -1838,8 +1820,8 @@ class GUIClass(PortDefineClass):
         self.scan_area_minus.config(state='disabled')
         self.scan_area_plus.config(state='disabled')
         self.res_100.config(state='disabled')
-        self.res_200.config(state='disabled')
-        
+        self.res_150.config(state='disabled')
+        self.res_200.config(state='disabled')        
         if self.condition == 1:
             self.start_timer()
             self.data_scan.ScanRoutine(c, fn)
@@ -1894,8 +1876,8 @@ class GUIClass(PortDefineClass):
         self.scan_area_minus.config(state='normal')
         self.scan_area_plus.config(state='normal')
         self.res_100.config(state='normal')
-        self.res_200.config(state='normal')
-        
+        self.res_150.config(state='normal')
+        self.res_200.config(state='normal')        
         # Re-enable scanning distance buttons after scanning
         self.up_button.config(state='normal')
         self.down_button.config(state='normal')
@@ -1954,6 +1936,8 @@ class GUIClass(PortDefineClass):
         
         self.label11["text"] = "Homing"
         self.started_flashing()
+        # Hide offsets during homing
+        self.refresh_offset_display()
         
         self.home.Home()
         self.HomeButton.config(state='normal')
@@ -1968,6 +1952,8 @@ class GUIClass(PortDefineClass):
             self.label9["bg"] = "green"
             self.label11["text"] = "Home"
         self.stopped_flashing()
+        # Keep offsets hidden at Home position
+        self.refresh_offset_display()
 
     def goingto_scanpos(self):
         if not self.check_door_before_action("Move to Scanning Position"):
@@ -1989,6 +1975,8 @@ class GUIClass(PortDefineClass):
         
         self.label11["text"] = "Going to ScanPos"
         self.started_flashing()
+        # Hide offsets while moving to scan position
+        self.refresh_offset_display()
         
         self.data_scan.ScanPos()
         if self.xy_move.EMGSwitch():
@@ -2020,6 +2008,8 @@ class GUIClass(PortDefineClass):
         # Change the label to "Unloading"
         self.label11["text"] = "Unloading"
         self.started_flashing()
+        # Hide offsets during unloading
+        self.refresh_offset_display()
 
         # Now check the previous label value instead of the current one
         if previous_label == "Scan Pos":
@@ -2041,6 +2031,8 @@ class GUIClass(PortDefineClass):
         self.stopped_flashing()
         self.UnloadButton.config(state='normal')
         self.label11["text"] = "Home"
+        # Keep offsets hidden at Home position
+        self.refresh_offset_display()
 
     def goingto_calpos(self):
         if not self.check_door_before_action("Goto Z-Height Calibration Position"):
@@ -2057,6 +2049,8 @@ class GUIClass(PortDefineClass):
     def goto_calpos(self):
         self.label11["text"] = "Going to CalPos"
         self.started_flashing()
+        # Hide offsets while moving to calibration position
+        self.refresh_offset_display()
         
         self.data_scan.ZHtCalibPos()
         if self.xy_move.EMGSwitch():
@@ -2084,7 +2078,9 @@ class GUIClass(PortDefineClass):
         
     def start_calib(self):
         self.label11["text"] = "Calibrating"
-        self.started_flashing()        
+        self.started_flashing()
+        # Hide offsets during calibration
+        self.refresh_offset_display()
         
         self.data_scan.GoCalib()
         StatusDataClass.z_offset = StatusDataClass.zcal_offset
@@ -2098,6 +2094,8 @@ class GUIClass(PortDefineClass):
             self.label22["text"] = "Calibrated"
             self.label11["text"] = "Home"
             self.label22["bg"] = "green"
+            # Keep offsets hidden at Home position after calibration
+            self.refresh_offset_display()
 
     def update_offset_file(self):
         # Write offsets from StatusDataClass in same order as previous file format
@@ -2124,10 +2122,14 @@ class GUIClass(PortDefineClass):
         if pos == "Calibration Pos":
             self.label4["text"] = StatusDataClass.xcal_offset
             self.label5["text"] = StatusDataClass.ycal_offset
-        else:
-            # default to scan offsets (also used while at Home)
+        elif pos == "Scan Pos":
+            # Show scan offsets only when at Scan Pos
             self.label4["text"] = StatusDataClass.x_offset
             self.label5["text"] = StatusDataClass.y_offset
+        else:
+            # Show "---" for all other positions (Home, etc.)
+            self.label4["text"] = "---"
+            self.label5["text"] = "---"
 
     def ZHtDownPosOffset(self):
         
@@ -2261,13 +2263,16 @@ class GUIClass(PortDefineClass):
             StatusDataClass.roughness -= 5
             self.scan_area_value.config(text=str(StatusDataClass.roughness))
             self.update_grid_display()
-    
     def set_resolution(self, value):
         if value == 1:  # 100x100 = 10,000 points
             StatusDataClass.resolution = 10000
             StatusDataClass.xdensity = 100
             StatusDataClass.ydensity = 100
-        elif value == 2:  # 200x200 = 40,000 points
+        elif value == 2:  # 150x150 = 22,500 points
+            StatusDataClass.resolution = 22500
+            StatusDataClass.xdensity = 150
+            StatusDataClass.ydensity = 150
+        elif value == 3:  # 200x200 = 40,000 points
             StatusDataClass.resolution = 40000
             StatusDataClass.xdensity = 200
             StatusDataClass.ydensity = 200
@@ -2278,6 +2283,8 @@ class GUIClass(PortDefineClass):
 
 if __name__ == '__main__':
     main()
+
+
 
 
 

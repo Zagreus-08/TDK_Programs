@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "1": {
+      "name": "t",
+      "visible": true,
+      "tasks": []
+    }
+  },
+  "settings": {
+    "start_date": "2025-11-10",
+    "num_weeks": 6,
+    "current_file": "C:/Users/a493353/Desktop/Gantt_Chart3.xlsx"
+  }
+}
