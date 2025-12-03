@@ -87,16 +87,16 @@ def get_log_file_path(dt=None):
     if not os.path.exists(fp):
         with open(fp, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["Timestamp", "Flow (SLPM)", "Total (NCM)", "Temperature (°C)", "Battery"])
+            w.writerow(["Timestamp", "Flow (SLPM)", "Total (NCM)", "Temperature (°C)"])
     return fp
 
 
-def append_log(flow, total, temp, batt_text):
+def append_log(flow, total, temp):
     fp = get_log_file_path()
     with open(fp, "a", newline="") as f:
         w = csv.writer(f)
         w.writerow([datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    f"{flow:.2f}", f"{total:.3f}", f"{temp:.1f}", batt_text])
+                    f"{flow:.2f}", f"{total:.3f}", f"{temp:.1f}"])
 
 
 # ============== MF5708 MODBUS RTU COMMUNICATION ==============
@@ -564,8 +564,7 @@ class FlowDashboard:
         
         self.var_flow = tk.StringVar(self.root, "0.00")
         self.var_total = tk.StringVar(self.root, "0.000")
-        self.var_temp = tk.StringVar(self.root, "N/A")  # Not used
-        self.var_batt = tk.StringVar(self.root, "N/A")  # Not used
+        self.var_temp = tk.StringVar(self.root, "25.0")
         
         def make_card(parent, var, title, unit="", color="#223153"):
             f = ctk.CTkFrame(parent, fg_color=color, corner_radius=8)
@@ -664,9 +663,9 @@ class FlowDashboard:
                        font=("Consolas", 9))
         style.configure("Treeview.Heading", background="#2d3748", foreground="white", font=("Arial", 9, "bold"))
         
-        self.tree = ttk.Treeview(table_frame, columns=("Time", "Flow", "Total", "Temp", "Batt"), 
+        self.tree = ttk.Treeview(table_frame, columns=("Time", "Flow", "Total", "Temp"), 
                                  show="headings", height=12)
-        for c, w in [("Time", 130), ("Flow", 70), ("Total", 80), ("Temp", 60), ("Batt", 80)]:
+        for c, w in [("Time", 130), ("Flow", 80), ("Total", 90), ("Temp", 70)]:
             self.tree.heading(c, text=c)
             self.tree.column(c, width=w, anchor="center")
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -747,18 +746,16 @@ class FlowDashboard:
         """Read sensor data (simulation or hardware)."""
         if self.settings["simulate"]:
             flow, total, temp = self.simulator.read_all()
-            batt = self.simulator.get_battery_text()
-            return flow, total, temp, batt
+            return flow, total, temp
         else:
             if not self.sensor.connected:
-                return 0.0, 0.0, 25.0, "N/A"
+                return 0.0, 0.0, 25.0
             result = self.sensor.read_all()
             if result is None:
                 self.error_label.configure(text=f"Read error: {self.sensor.last_error}")
-                return 0.0, 0.0, 25.0, "N/A"
+                return 0.0, 0.0, 25.0
             flow, total, temp = result
-            # MF5708 doesn't report battery, so we show N/A for hardware
-            return round(flow, 2), round(total, 3), round(temp, 1), "N/A (Wired)"
+            return round(flow, 2), round(total, 3), round(temp, 1)
     
     # ==================== UPDATE LOOPS ====================
     def _schedule_update(self):
@@ -775,7 +772,7 @@ class FlowDashboard:
     
     def _do_update(self):
         """Main update: read sensor, update buffers, update UI, log data."""
-        flow, total, temp, batt_text = self._read_sensor()
+        flow, total, temp = self._read_sensor()
         now = datetime.datetime.now()
         
         # Append to live buffers
@@ -789,11 +786,10 @@ class FlowDashboard:
             self.var_flow.set(f"{flow:.2f}")
             self.var_total.set(f"{total:.3f}")
             self.var_temp.set(f"{temp:.1f}")
-            self.var_batt.set(batt_text)
             
             # Log to CSV
             try:
-                append_log(flow, total, temp, batt_text)
+                append_log(flow, total, temp)
             except Exception:
                 pass
             
@@ -1049,7 +1045,7 @@ class FlowDashboard:
         try:
             with open(fn, "w", newline="") as f:
                 w = csv.writer(f)
-                w.writerow(["Time", "Flow", "Total", "Temp", "Battery"])
+                w.writerow(["Time", "Flow", "Total", "Temp"])
                 for item in self.tree.get_children():
                     w.writerow(self.tree.item(item)["values"])
             messagebox.showinfo("Saved", f"Data exported to:\n{fn}")
