@@ -87,16 +87,16 @@ def get_log_file_path(dt=None):
     if not os.path.exists(fp):
         with open(fp, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["Timestamp", "Flow (SLPM)", "Total (NCM)", "Temperature (°C)"])
+            w.writerow(["Timestamp", "Flow (SLPM)", "Total (NCM)"])
     return fp
 
 
-def append_log(flow, total, temp):
+def append_log(flow, total):
     fp = get_log_file_path()
     with open(fp, "a", newline="") as f:
         w = csv.writer(f)
         w.writerow([datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    f"{flow:.2f}", f"{total:.3f}", f"{temp:.1f}"])
+                    f"{flow:.2f}", f"{total:.3f}"])
 
 
 # ============== MF5708 MODBUS RTU COMMUNICATION ==============
@@ -424,7 +424,6 @@ class FlowDashboard:
         self.times = collections.deque(maxlen=MAX_BUFFER_POINTS)
         self.flows = collections.deque(maxlen=MAX_BUFFER_POINTS)
         self.totals = collections.deque(maxlen=MAX_BUFFER_POINTS)
-        self.temps = collections.deque(maxlen=MAX_BUFFER_POINTS)
         
         # Build UI
         self._build_ui()
@@ -564,7 +563,6 @@ class FlowDashboard:
         
         self.var_flow = tk.StringVar(self.root, "0.00")
         self.var_total = tk.StringVar(self.root, "0.000")
-        self.var_temp = tk.StringVar(self.root, "25.0")
         
         def make_card(parent, var, title, unit="", color="#223153"):
             f = ctk.CTkFrame(parent, fg_color=color, corner_radius=8)
@@ -663,9 +661,9 @@ class FlowDashboard:
                        font=("Consolas", 9))
         style.configure("Treeview.Heading", background="#2d3748", foreground="white", font=("Arial", 9, "bold"))
         
-        self.tree = ttk.Treeview(table_frame, columns=("Time", "Flow", "Total", "Temp"), 
+        self.tree = ttk.Treeview(table_frame, columns=("Time", "Flow", "Total"), 
                                  show="headings", height=12)
-        for c, w in [("Time", 130), ("Flow", 80), ("Total", 90), ("Temp", 70)]:
+        for c, w in [("Time", 140), ("Flow", 100), ("Total", 110)]:
             self.tree.heading(c, text=c)
             self.tree.column(c, width=w, anchor="center")
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -745,17 +743,17 @@ class FlowDashboard:
     def _read_sensor(self):
         """Read sensor data (simulation or hardware)."""
         if self.settings["simulate"]:
-            flow, total, temp = self.simulator.read_all()
-            return flow, total, temp
+            flow, total, _ = self.simulator.read_all()
+            return flow, total
         else:
             if not self.sensor.connected:
-                return 0.0, 0.0, 25.0
+                return 0.0, 0.0
             result = self.sensor.read_all()
             if result is None:
                 self.error_label.configure(text=f"Read error: {self.sensor.last_error}")
-                return 0.0, 0.0, 25.0
-            flow, total, temp = result
-            return round(flow, 2), round(total, 3), round(temp, 1)
+                return 0.0, 0.0
+            flow, total, _ = result
+            return round(flow, 2), round(total, 3)
     
     # ==================== UPDATE LOOPS ====================
     def _schedule_update(self):
@@ -772,24 +770,22 @@ class FlowDashboard:
     
     def _do_update(self):
         """Main update: read sensor, update buffers, update UI, log data."""
-        flow, total, temp = self._read_sensor()
+        flow, total = self._read_sensor()
         now = datetime.datetime.now()
         
         # Append to live buffers
         self.times.append(now)
         self.flows.append(flow)
         self.totals.append(total)
-        self.temps.append(temp)
         
         # Update UI if in live mode
         if self.mode == "live":
             self.var_flow.set(f"{flow:.2f}")
             self.var_total.set(f"{total:.3f}")
-            self.var_temp.set(f"{temp:.1f}")
             
             # Log to CSV
             try:
-                append_log(flow, total, temp)
+                append_log(flow, total)
             except Exception:
                 pass
             
@@ -801,11 +797,11 @@ class FlowDashboard:
         try:
             for r in self.tree.get_children():
                 self.tree.delete(r)
-            items = list(zip(self.times, self.flows, self.totals, self.temps))
+            items = list(zip(self.times, self.flows, self.totals))
             tail = items[-RECENT_TABLE_SIZE:]
-            for t, f, tot, te in reversed(tail):  # Most recent first
+            for t, f, tot in reversed(tail):  # Most recent first
                 self.tree.insert("", tk.END, values=(
-                    t.strftime("%Y-%m-%d %H:%M:%S"), f"{f:.2f}", f"{tot:.3f}", f"{te:.1f}", ""
+                    t.strftime("%Y-%m-%d %H:%M:%S"), f"{f:.2f}", f"{tot:.3f}"
                 ))
         except Exception as e:
             print(f"Live table error: {e}", file=sys.stderr)
@@ -824,13 +820,12 @@ class FlowDashboard:
             now = datetime.datetime.now()
             cutoff = now - datetime.timedelta(seconds=window_seconds)
             
-            xs, ys_flow, ys_total, ys_temp = [], [], [], []
-            for t, f, tt, te in zip(self.times, self.flows, self.totals, self.temps):
+            xs, ys_flow, ys_total = [], [], []
+            for t, f, tt in zip(self.times, self.flows, self.totals):
                 if t >= cutoff:
                     xs.append(t)
                     ys_flow.append(f)
                     ys_total.append(tt)
-                    ys_temp.append(te)
             
             if not xs:
                 return
@@ -841,15 +836,14 @@ class FlowDashboard:
             # Plot lines with better colors
             self.ax.plot(xs, ys_flow, color="#00d4ff", linewidth=2, label="Flow (SLPM)")
             self.ax.plot(xs, ys_total, color="#00ff88", linewidth=1.5, label="Total (NCM)")
-            self.ax.plot(xs, ys_temp, color="#ff9f43", linestyle="--", linewidth=1.5, label="Temp (°C)")
             
             # Scrolling window
             self.ax.set_xlim(cutoff, now)
-            max_val = max(max(ys_flow) if ys_flow else 1, max(ys_temp) if ys_temp else 1)
+            max_val = max(max(ys_flow) if ys_flow else 1, max(ys_total) if ys_total else 1)
             self.ax.set_ylim(0, max_val * 1.3)
             
             # Styling
-            self.ax.set_title("Live Flow / Total / Temp", color='white', fontsize=12)
+            self.ax.set_title("Live Flow / Total", color='white', fontsize=12)
             self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
             self.ax.tick_params(colors='white')
             self.ax.legend(loc="upper left", facecolor='#1a1a2e', edgecolor='#333', labelcolor='white')
@@ -1045,7 +1039,7 @@ class FlowDashboard:
         try:
             with open(fn, "w", newline="") as f:
                 w = csv.writer(f)
-                w.writerow(["Time", "Flow", "Total", "Temp"])
+                w.writerow(["Time", "Flow", "Total"])
                 for item in self.tree.get_children():
                     w.writerow(self.tree.item(item)["values"])
             messagebox.showinfo("Saved", f"Data exported to:\n{fn}")
