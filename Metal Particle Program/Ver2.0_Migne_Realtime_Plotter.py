@@ -1298,22 +1298,22 @@ class GUIClass(PortDefineClass):
         self.UnloadButton.place(x = 240, y = 250)
         
         # X/Y offset adjustment buttons (hold to continuously move)
-        self.XPlusButton = Button(self.win, text = '→', font = self.buttonFont, height = 1, width = 2)
+        self.XPlusButton = Button(self.win, text = '→', font = self.buttonFont, height = 1, width = 2)
         self.XPlusButton.place(x = 600, y = 245)
         self.XPlusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('X', 1))
         self.XPlusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.XMinusButton = Button(self.win, text = '←', font = self.buttonFont, height = 1, width = 2)
+        self.XMinusButton = Button(self.win, text = '←', font = self.buttonFont, height = 1, width = 2)
         self.XMinusButton.place(x = 470, y = 245)
         self.XMinusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('X', -1))
         self.XMinusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.YPlusButton = Button(self.win, text = '↑', font = self.buttonFont, height = 1, width = 2)
+        self.YPlusButton = Button(self.win, text = '↑', font = self.buttonFont, height = 1, width = 2)
         self.YPlusButton.place(x = 535, y = 210)
         self.YPlusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('Y', 1))
         self.YPlusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.YMinusButton = Button(self.win, text = '↓', font = self.buttonFont, height = 1, width = 2)
+        self.YMinusButton = Button(self.win, text = '↓', font = self.buttonFont, height = 1, width = 2)
         self.YMinusButton.place(x = 535, y = 275)
         self.YMinusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('Y', -1))
         self.YMinusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
@@ -1354,16 +1354,16 @@ class GUIClass(PortDefineClass):
         self.CalibrateButton.place(x = 10, y = 250)
         
         # Arrow buttons for scanning distance (²/¼) and z-height offset (²/¼)
-        self.up_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.increase_value)
+        self.up_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.increase_value)
         self.up_button.place(x = 590, y = 330)
 
-        self.down_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.decrease_value)
+        self.down_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.decrease_value)
         self.down_button.place(x = 715, y = 330)
         
-        self.inc_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.ZHtUpPosOffset)
+        self.inc_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.ZHtUpPosOffset)
         self.inc_button.place(x = 590, y = 400)
 
-        self.dec_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.ZHtDownPosOffset)
+        self.dec_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.ZHtDownPosOffset)
         self.dec_button.place(x = 675, y = 400)
 
         self.label1 = Label(self.win, text = 'X Offset:', font = self.labelFont, width = 7, bg='#0046ad', fg='white')
@@ -1382,6 +1382,7 @@ class GUIClass(PortDefineClass):
         self.label5 = Label(self.win, text = '---', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
         self.label5.place(x = 580, y = 180)
         
+        # NOTE: X/Y editable entries moved to the left-side area (replacing the old X/Y status indicator)
         # left-side z display moved into button; show small ZOffset label
         self.label6 = None  # no separate label for z-height, using self.calib_btn_var instead
 
@@ -1420,10 +1421,10 @@ class GUIClass(PortDefineClass):
         self.scan_area_value = Label(self.win, text = str(StatusDataClass.roughness), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
         self.scan_area_value.place(x = 110, y = 335)
         
-        self.scan_area_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_scan_area)
+        self.scan_area_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_scan_area)
         self.scan_area_minus.place(x = 20, y = 365)
         
-        self.scan_area_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_scan_area)
+        self.scan_area_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_scan_area)
         self.scan_area_plus.place(x = 80, y = 365)
         
         # Resolution controls
@@ -1448,6 +1449,29 @@ class GUIClass(PortDefineClass):
         # Grid size display
         self.label_grid_info = Label(self.win, text = f'{StatusDataClass.roughness}mm | {StatusDataClass.xdensity}x{StatusDataClass.ydensity} ({StatusDataClass.resolution:,} pts)', font = self.labelFont3, bg='#0046ad', fg='yellow')
         self.label_grid_info.place(x = 170, y = 313)
+
+        # --- X/Y offset display (left side): show both Scan and Calibration offsets ---
+        # Scan offsets (left column)
+        self.label_scan_x = Label(self.win, text = 'Scan X Offset:', font = self.labelFont2, bg='#0046ad', fg='white', width = 12)
+        self.label_scan_x.place(x = 150, y = 350)
+        self.label_x_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 12)
+        self.label_x_val.place(x = 260, y = 350)
+
+        self.label_scan_y = Label(self.win, text = 'Scan Y Offset:', font = self.labelFont2, bg='#0046ad', fg='white', width = 12)
+        self.label_scan_y.place(x = 150, y = 380)
+        self.label_y_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 12)
+        self.label_y_val.place(x = 260, y = 380)
+
+        # Calibration offsets (right column)
+        self.label_cal_x = Label(self.win, text = 'Cal X Offset:', font = self.labelFont2, bg='#0046ad', fg='white', width = 12)
+        self.label_cal_x.place(x = 360, y = 350)
+        self.label_cal_x_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 12)
+        self.label_cal_x_val.place(x = 470, y = 350)
+
+        self.label_cal_y = Label(self.win, text = 'Cal Y Offset:', font = self.labelFont2, bg='#0046ad', fg='white', width = 12)
+        self.label_cal_y.place(x = 360, y = 380)
+        self.label_cal_y_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 12)
+        self.label_cal_y_val.place(x = 470, y = 380)
 
         self.label15 = Label(self.win, text = 'Run Mode:', font = self.labelFont3, height = 1, width = 10, bg='#0046ad', fg='white')
         self.label15.place(x = 450, y = 70)
@@ -1477,13 +1501,6 @@ class GUIClass(PortDefineClass):
         
         self.label29 = Label(self.win, text = "Adjust Speed", font = self.labelFont2, width = 13, bg='#0046ad', fg='yellow')
         self.label29.place(x = 685, y = 220)
-
-        # Zero offset warning label - always visible when X and Y offsets are both 0
-        self.zero_offset_warning = Label(self.win, text = "⚠ X/Y OFFSET = 0 ⚠\nAdjust offset before scan!", 
-                                         font = self.labelFont3, bg='red', fg='white', justify='center')
-        self.zero_offset_warning.place(x = 240, y = 330)  # Always placed, visibility controlled by check
-        self._zero_warning_flash = False
-        self._zero_warning_visible = True  # Start visible since offsets default to 0
 
         # X/Y textboxes removed - using hold buttons instead
         
@@ -1795,6 +1812,11 @@ class GUIClass(PortDefineClass):
             messagebox.showerror("Error", "Calibration not yet Completed")
             return
         
+        # Check if X/Y offsets are zero - prevent scanning
+        if StatusDataClass.x_offset == 0 and StatusDataClass.y_offset == 0:
+            messagebox.showerror("Error", "X/Y Offsets Not Set!\n\nPlease:\n1. Click 'Move to Scanning Pos'\n2. Use arrow buttons to center particle\n3. Try scanning again")
+            return
+        
         if self.label11.cget("text") != str("Home"):
             return
         
@@ -1931,12 +1953,7 @@ class GUIClass(PortDefineClass):
         # Refresh the contextual X/Y display (defaults to scan offsets)
         self.refresh_offset_display()
         
-        # Check and start zero offset warning if needed (flashing starts immediately)
-        self.check_zero_offset_warning()
-        # Start flashing if offsets are zero at startup
-        if StatusDataClass.x_offset == 0 and StatusDataClass.y_offset == 0:
-            self._zero_warning_flash = True
-            self._flash_zero_warning()
+        # Offset entries will be shown/updated by refresh_offset_display() on startup
     
     def started_homing(self):
         if not self.check_door_before_action("Home"):
@@ -2129,24 +2146,30 @@ class GUIClass(PortDefineClass):
         self.refresh_offset_display()
         # Persist offsets
         self.update_offset_file()
+    
+
 
     def refresh_offset_display(self):
-        # If currently in calibration position, display calibration offsets
+        # Always update left-side static labels for Scan and Calibration offsets
+        try:
+            self.label_x_val.config(text=str(StatusDataClass.x_offset))
+            self.label_y_val.config(text=str(StatusDataClass.y_offset))
+            self.label_cal_x_val.config(text=str(StatusDataClass.xcal_offset))
+            self.label_cal_y_val.config(text=str(StatusDataClass.ycal_offset))
+        except Exception:
+            passca
+
+        # Update right-side contextual display (Scan/Calibration or ---)
         pos = self.label11.cget("text")
         if pos == "Calibration Pos":
             self.label4["text"] = StatusDataClass.xcal_offset
             self.label5["text"] = StatusDataClass.ycal_offset
         elif pos == "Scan Pos":
-            # Show scan offsets only when at Scan Pos
             self.label4["text"] = StatusDataClass.x_offset
             self.label5["text"] = StatusDataClass.y_offset
         else:
-            # Show "---" for all other positions (Home, etc.)
             self.label4["text"] = "---"
             self.label5["text"] = "---"
-        
-        # Check and update zero offset warning
-        self.check_zero_offset_warning()
 
     def ZHtDownPosOffset(self):
         
@@ -2297,34 +2320,6 @@ class GUIClass(PortDefineClass):
     
     def update_grid_display(self):
         self.label_grid_info.config(text=f'{StatusDataClass.roughness}mm | {StatusDataClass.xdensity}x{StatusDataClass.ydensity} ({StatusDataClass.resolution:,} pts)')
-
-    def check_zero_offset_warning(self):
-        """Check if X and Y scan offsets are both zero and show/hide warning accordingly"""
-        # Always check scan offsets (x_offset and y_offset) - these are the critical ones for scanning
-        is_zero = (StatusDataClass.x_offset == 0 and StatusDataClass.y_offset == 0)
-        
-        if is_zero and not self._zero_warning_visible:
-            # Show and start flashing
-            self.zero_offset_warning.place(x = 240, y = 330)
-            self._zero_warning_visible = True
-            self._zero_warning_flash = True
-            self._flash_zero_warning()
-        elif not is_zero and self._zero_warning_visible:
-            # Hide warning
-            self.zero_offset_warning.place_forget()
-            self._zero_warning_visible = False
-            self._zero_warning_flash = False
-
-    def _flash_zero_warning(self):
-        """Flash the zero offset warning label"""
-        if not self._zero_warning_flash or not self._zero_warning_visible:
-            return
-        
-        current_bg = self.zero_offset_warning.cget("bg")
-        new_bg = "yellow" if current_bg == "red" else "red"
-        new_fg = "black" if new_bg == "yellow" else "white"
-        self.zero_offset_warning.config(bg=new_bg, fg=new_fg)
-        self.win.after(500, self._flash_zero_warning)
 
 if __name__ == '__main__':
     main()

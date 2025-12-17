@@ -6,18 +6,21 @@ from RpiMotorLib import RpiMotorLib
 import timeit
 from daqhats import mcc128, OptionFlags, HatIDs, AnalogInputMode, AnalogInputRange, hat_list, HatError
 
-# Manual implementation of chan_list_to_mask to avoid import issues
-def chan_list_to_mask(chan_list):
-    """Convert a list of channel numbers to a channel mask."""
-    mask = 0
-    for chan in chan_list:
-        mask |= (1 << chan)
-    return mask
+# try to import helper; if not available, provide a simple implementation
+try:
+    from daqhats_utils import chan_list_to_mask
+except Exception:
+    def chan_list_to_mask(chan_list):
+        """Convert a list of channel numbers to a channel mask (fallback)."""
+        mask = 0
+        for chan in chan_list:
+            mask |= (1 << chan)
+        return mask
 
 import csv
 from tkinter import *
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox
 import tkinter.font as TkFont
 import os
 import serial
@@ -76,25 +79,31 @@ class StatusDataClass:
     zcal_offset = 0
     ScanHt = 0
     ZOffset = 0
-    scan_range = 100  # Default scanning range
 
 class SerialDataComClass:
     def __init__(self):
-        self.ser = serial.Serial('/dev/ttyUSB0', 115200) #serial init
+        try:
+            self.ser = serial.Serial('/dev/ttyUSB0', 115200) #serial init
+        except Exception as e:
+            print("Serial init failed:", e)
+            self.ser = None
 
     def TrSerialData(self, dat):
         print(str(dat))
-        self.ser.write(str(dat).encode())
-        self.ser.write(str("\n").encode())
+        if self.ser:
+            self.ser.write(str(dat).encode())
+            self.ser.write(str("\n").encode())
         
     def TrStartData(self):
         print("START!!!!!!!!!!!!!!!!")
-        self.ser.write(str("s\n").encode())
+        if self.ser:
+            self.ser.write(str("s\n").encode())
     
     def TrEndData(self):
         #dat= dat.replace('""', '')
         print("END!!!!!!!!!!!!!!!!")
-        self.ser.write(str("e\n").encode())
+        if self.ser:
+            self.ser.write(str("e\n").encode())
 
     def TrScanData(self, c, fn):
         self.TrSerialData(f'{StatusDataClass.x_point},{StatusDataClass.y_point},{StatusDataClass.v_data:.9f},{fn}')
@@ -107,7 +116,8 @@ class SerialDataComClass:
         c.writerow(data)
         
     def SerialEnd(self):
-        self.ser.close()
+        if self.ser:
+            self.ser.close()
         
 class SystemFuncClass:
     stop_flag = False  # Stop flag for stopping movement
@@ -786,7 +796,7 @@ class DataScanClass:
         if not hats:
             raise HatError("No MCC 128 HAT devices found.")
         
-        # Use the first and second HAT devices
+        # Use the first HAT device
         self.address_1 = hats[0].address
         
         self.hat_1 = mcc128(self.address_1)
@@ -939,8 +949,6 @@ class DataScanClass:
     #xdensity  scan point per one lineXhome
     #? : roud = 50 = 1mm  50 de 1mm r 20 d 100
     def CorrectScan(self, roughdness, xdensity, ydensity, c, fn):
-        # Use the selected scan range
-        scan_range = StatusDataClass.scan_range
         xrough = roughdness / xdensity
         yrough = roughdness / ydensity
         
@@ -966,7 +974,7 @@ class DataScanClass:
             
             #dassyutujouken
             if x_pos == xdensity :
-                self.xymove.XmoveCorrect(int(xrough * 20) * scan_range)
+                self.xymove.XmoveCorrect(int(xrough * 20) * 100)
                 if SystemFuncClass.stop_flag:
                     print("STOP detected in CorrectScan - Exiting!")
                     return  # Immediately exit scan
@@ -1044,9 +1052,7 @@ class DataScanClass:
         sleep (1.5)
         if SystemFuncClass.stop_flag:
                 return
-        # Use the selected scan range for both x and y density
-        scan_range = StatusDataClass.scan_range
-        self.CorrectScan(20, scan_range, scan_range, c, fn)
+        self.CorrectScan(20, 100, 100, c, fn)
         if SystemFuncClass.stop_flag:
             print("Scan stopped after CorrectScan.")
             return  # Exit immediately
@@ -1094,7 +1100,6 @@ class GUIClass(PortDefineClass):
         self.mv = IntVar()
         self.mv.set("1")
         self.mov = 1
-        self.scan_range_val = 100
         self.validator = self.win.register(self.validate_input)
         self.value = 2.0
         self.prev_axis_text = "---"
@@ -1125,12 +1130,16 @@ class GUIClass(PortDefineClass):
         self.ShutdownButton = Button(self.win, text = 'Shutdown', font = self.buttonFont, command = self.system_func.shutdown, height = 1, width = 7)
         self.ShutdownButton.place(x = 650, y = 5)
         
-        self.GotoScanButton = Button(self.win, text = 'Move to Scanning Pos', font = self.buttonFont, command = self.goingto_scanpos, height = 1, width = 19)
-        self.GotoScanButton.place(x = 470, y = 120)
+        # --- NEW: split Move to Scanning Pos into two adjacent buttons ---
+        self.MoveScanButton = Button(self.win, text = 'Move to\nScanning Pos', font = self.buttonFont3, command = self.goingto_scanpos, height = 2, width = 12)
+        self.MoveScanButton.place(x = 470, y = 120)
+        self.MoveCalibButton = Button(self.win, text = 'Goto Z-Ht\nCalibration Pos', font = self.buttonFont3, command = self.goingto_calpos, height = 2, width = 12)
+        self.MoveCalibButton.place(x = 612, y = 120)
         
         self.UnloadButton = Button(self.win, text = 'Unload', font = self.buttonFont3, command = self.goingto_unloadpos, height = 2, width = 17)
         self.UnloadButton.place(x = 240, y = 250)
         
+        # X/Y offset Move buttons (global - operate on either scan or calibration offsets depending on current position)
         self.XZOffsetButton = Button(self.win, text = 'X offset Move', font = self.buttonFont, command = self.XZSetPosOffset, height = 1, width = 11)
         self.XZOffsetButton.place(x = 470, y = 230)
         
@@ -1140,15 +1149,9 @@ class GUIClass(PortDefineClass):
         self.YOffsetButton = Button(self.win, text = 'Y offset Move', font = self.buttonFont, command = self.YSetPosOffset, height = 1, width = 11)
         self.YOffsetButton.place(x = 470, y = 285)
         
-        self.XCalButton = Button(self.win, text = 'XCal Move', font = self.buttonFont, command = self.XCalPosOffset, height = 1, width = 8)
-        self.XCalButton.place(x = 10, y = 310)
-        
-        self.YCalButton = Button(self.win, text = 'YCal Move', font = self.buttonFont, command = self.YCalPosOffset, height = 1, width = 8)
-        self.YCalButton.place(x = 165, y = 310)
+        # NOTE: removed the left-side calibration buttons (and left X/Y position display)
+        # The calibration function remains accessible via the MoveCalibButton and the same X/Y offset inputs.
 
-        self.GotoCalibButton = Button(self.win, text = 'Goto Z-Ht\nCalibration Position', font = self.buttonFont3, command = self.goingto_calpos, height = 2, width = 17)
-        self.GotoCalibButton.place(x = 10, y = 250)
-        
         self.CalibrateButton = Button(self.win, text = 'Calibrate\nZ-Height', font = self.buttonFont, command = self.starting_calib, height = 2, width = 7, bg='yellow', activebackground='yellow')
         self.CalibrateButton.place(x = 320, y = 310)
         
@@ -1173,6 +1176,7 @@ class GUIClass(PortDefineClass):
         self.label3 = Label(self.win, text = 'Scanning\nDistance:', font = self.labelFont, width = 9, bg='#0046ad', fg='white')
         self.label3.place(x = 480, y = 330)
         
+        # Contextual offset display (these show scan offsets or calibration offsets depending on current position)
         self.label4 = Label(self.win, text = '0', font = self.labelFont, height = 1, width = 10, bg='#0046ad', fg='white')
         self.label4.place(x = 680, y = 170)
         
@@ -1209,17 +1213,7 @@ class GUIClass(PortDefineClass):
         self.label15 = Label(self.win, text = 'Run Mode:', font = self.labelFont3, height = 1, width = 10, bg='#0046ad', fg='white')
         self.label15.place(x = 478, y = 70)
         
-        self.label17 = Label(self.win, text = 'X Position:', font = self.labelFont, width = 10, bg='#0046ad', fg='white')
-        self.label17.place(x = 10, y = 360)
-        
-        self.label18 = Label(self.win, text = 'Y Position:', font = self.labelFont, width = 10, bg='#0046ad', fg='white')
-        self.label18.place(x = 10, y = 390)
-
-        self.label19 = Label(self.win, text = '0', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
-        self.label19.place(x = 215, y = 360)
-        
-        self.label20 = Label(self.win, text = '0', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
-        self.label20.place(x = 215, y = 390)
+        # left X/Y position display removed to free space for future functions (label17..20 removed)
 
         self.label21 = Label(self.win, text = 'Z-Ht Calibration Status:', font = self.labelFont, width = 21, bg='#0046ad', fg='white')
         self.label21.place(x = 0, y = 423)
@@ -1245,15 +1239,7 @@ class GUIClass(PortDefineClass):
         self.label28 = Label(self.win, text = '0', font = self.labelFont3, height = 1, width = 3, bg='#0046ad', fg='white')
         self.label28.place(x = 635, y = 410)
 
-        self.label29 = Label(self.win, text = 'Scan Range:', font = self.labelFont3, height = 1, width = 10, bg='#0046ad', fg='white')
-        self.label29.place(x = 600, y = 170)
-        
-        # Scan Range Dropdown
-        self.scan_range_combo = ttk.Combobox(self.win, values=["100", "200", "300"], state="readonly", width=5, font=self.labelFont3)
-        self.scan_range_combo.set("100")  # Default value
-        self.scan_range_combo.place(x = 710, y = 170)
-        self.scan_range_combo.bind("<<ComboboxSelected>>", self.on_scan_range_change)
-
+        # X/Y inputs (these are reused for both scan offsets and calibration offsets)
         self.XPos = Entry(self.win, width = 16, borderwidth=0, validate="key", validatecommand=(self.validator, "%P"))
         self.XPos.insert(0, 0)
         self.XPos.place(x = 570, y = 170)
@@ -1264,16 +1250,8 @@ class GUIClass(PortDefineClass):
         self.YPos.place(x = 570, y = 200)
         self.YPos.bind("<FocusIn>", self.system_func.callback)
         
-        self.XCal = Entry(self.win, width = 10, borderwidth=0, validate="key", validatecommand=(self.validator, "%P"))
-        self.XCal.insert(0, 0)
-        self.XCal.place(x = 130, y = 360)
-        self.XCal.bind("<FocusIn>", self.system_func.callback)
-        
-        self.YCal = Entry(self.win, width = 10, borderwidth=0, validate="key", validatecommand=(self.validator, "%P"))
-        self.YCal.insert(0, 0)
-        self.YCal.place(x = 130, y = 390)
-        self.YCal.bind("<FocusIn>", self.system_func.callback)
-        
+        # removed XCal/YCal entries (left side) as requested
+
         self.fname = Entry(self.win, font = self.inputFont, width = 27, borderwidth=0)
         self.fname.place(x = 160, y = 122)
         self.fname.bind("<FocusIn>", self.system_func.callback)
@@ -1337,7 +1315,7 @@ class GUIClass(PortDefineClass):
                         current_status = self.label11.cget("text")
     
                         if current_status in ["Home", "Scan Pos"]:
-                            # Case 1: At Home or Scan Pos � show Door Open (dont touch Homing)
+                            # Case 1: At Home or Scan Pos — show Door Open (don’t touch Homing)
                             self.was_scanning = False
                             self.prev_axis_status = current_status  # remember if it was Home or Scan Pos
                             self.label11.config(text="Door Open", bg="red", fg="white")
@@ -1345,7 +1323,7 @@ class GUIClass(PortDefineClass):
                             self._flash_label()
     
                         elif current_status == "Scanning":
-                            # Case 2: Scanning � force Not_Home + Door Open
+                            # Case 2: Scanning — force Not_Home + Door Open
                             self.was_scanning = True
                             self.label9.config(text="Not_Home", bg="red")
                             self.prev_axis_status = "Scanning"
@@ -1354,7 +1332,7 @@ class GUIClass(PortDefineClass):
                             self._flash_label()
     
                         else:
-                            # Case 3: Any other state � Not_Home + Axis = ---
+                            # Case 3: Any other state — Not_Home + Axis = ---
                             self.was_scanning = False
                             self.prev_axis_status = "---"
                             self.label9.config(text="Not_Home", bg="red")
@@ -1365,10 +1343,10 @@ class GUIClass(PortDefineClass):
                         # Disable critical buttons
                         self.HomeButton.config(state='disabled')
                         self.scan.config(state='disabled')
-                        self.GotoCalibButton.config(state='disabled')
+                        self.MoveCalibButton.config(state='disabled')
                         self.UnloadButton.config(state='disabled')
                         self.CalibrateButton.config(state='disabled')
-                        self.GotoScanButton.config(state='disabled')
+                        self.MoveScanButton.config(state='disabled')
     
                     if self.win.winfo_exists():
                         self.win.after(0, update_on_open)
@@ -1385,7 +1363,7 @@ class GUIClass(PortDefineClass):
                         self._stop = True
     
                         if self.was_scanning:
-                            # If door was opened during scanning � STOPPED
+                            # If door was opened during scanning — STOPPED
                             self.label11.config(bg="red", text="STOPPED")
                             self.was_scanning = False
                         else:
@@ -1400,10 +1378,10 @@ class GUIClass(PortDefineClass):
                         # Re-enable buttons
                         self.HomeButton.config(state='normal')
                         self.scan.config(state='normal')
-                        self.GotoCalibButton.config(state='normal')
+                        self.MoveCalibButton.config(state='normal')
                         self.UnloadButton.config(state='normal')
                         self.CalibrateButton.config(state='normal')
-                        self.GotoScanButton.config(state='normal')
+                        self.MoveScanButton.config(state='normal')
     
                     if self.win.winfo_exists():
                         self.win.after(0, update_on_close)
@@ -1431,11 +1409,12 @@ class GUIClass(PortDefineClass):
         self.label25.config(text=f"{self.value:.1f}")
 
     def validate_input(self, P):
+        # Allow empty string (clearing), a single '-' (partial), or an integer with optional leading '-'
         if P == "":
             return True
-        if P == "-" and entry.index(tk.INSERT) == 0:
+        if P == "-":
             return True
-        if P.isdigit() or (P[0] == '-' and P[1:].isdigit()):
+        if P.lstrip('-').isdigit():
             return True
         return False
 
@@ -1503,7 +1482,7 @@ class GUIClass(PortDefineClass):
             self.label11["text"] = "EMG Stop Pressed"
             self.scan.config(state='normal')
             self.HomeButton.config(state='normal')
-            self.GotoScanButton.config(state='normal')
+            self.MoveScanButton.config(state='normal')
             self.CalibrateButton.config(state='normal')
             self.stop_timer()
             self.stop_flashing()
@@ -1524,13 +1503,6 @@ class GUIClass(PortDefineClass):
     def movement(self, value):
         self.mov = value
     
-    def on_scan_range_change(self, event):
-        """Handle scan range dropdown selection"""
-        selected = self.scan_range_combo.get()
-        self.scan_range_val = int(selected)
-        StatusDataClass.scan_range = int(selected)
-        print(f"Scan range changed to: {selected}")
-    
     def gui_start(self):
         self.win.protocol("WM_DELETE_WINDOW", self.system_func.exitProgram)
         self.win.mainloop()
@@ -1545,12 +1517,6 @@ class GUIClass(PortDefineClass):
 
     def get_Y_offset_val(self):
         return self.YPos.get()
-
-    def get_XCal_offset_val(self):
-        return self.XCal.get()
-    
-    def get_YCal_offset_val(self):
-        return self.YCal.get()
     
     def get_filename_val(self):
         return self.fname.get()
@@ -1658,31 +1624,46 @@ class GUIClass(PortDefineClass):
         self.stopped_flashing()
     
     def init_offset_data(self):
-        f = open('/home/pi/Desktop/migne/offset.txt', 'r')
-        offset_data  = f.readlines()
-        offset_data  = offset_data[0].split(',')
+        # Read offsets from file and populate StatusDataClass
+        try:
+            f = open('/home/pi/Desktop/migne/offset.txt', 'r')
+            offset_data  = f.readlines()
+            offset_data  = offset_data[0].split(',')
+            f.close()
+        except Exception as e:
+            offset_data = ['0','0','0','0','0','0']
+            print("offset.txt read failed, defaulting offsets:", e)
         
-        self.label4["text"] = offset_data[0]
-        self.label5["text"] = offset_data[1]
-        self.label6["text"] = offset_data[2]
-        self.label19["text"] = offset_data[3]
-        self.label20["text"] = offset_data[4]
-        self.label28["text"] = offset_data[5]
-        
-        f.close()
-    
-        StatusDataClass.x_offset = int(offset_data[0])
-        StatusDataClass.y_offset = int(offset_data[1])
-        StatusDataClass.z_offset  = int(offset_data[2])
-        StatusDataClass.xcal_offset  = int(offset_data[3])
-        StatusDataClass.ycal_offset  = int(offset_data[4])
-        StatusDataClass.ZOffset  = int(offset_data[5])
+        # Save into StatusDataClass
+        try:
+            StatusDataClass.x_offset = int(offset_data[0])
+            StatusDataClass.y_offset = int(offset_data[1])
+            StatusDataClass.z_offset = int(offset_data[2])
+            StatusDataClass.xcal_offset = int(offset_data[3])
+            StatusDataClass.ycal_offset = int(offset_data[4])
+            StatusDataClass.ZOffset = int(offset_data[5])
+        except Exception:
+            # if parsing fails, default to zeros
+            StatusDataClass.x_offset = 0
+            StatusDataClass.y_offset = 0
+            StatusDataClass.z_offset = 0
+            StatusDataClass.xcal_offset = 0
+            StatusDataClass.ycal_offset = 0
+            StatusDataClass.ZOffset = 0
 
+        # Update display labels (z-offset label and ZOffset)
+        self.label6["text"] = StatusDataClass.z_offset
+        self.label28["text"] = StatusDataClass.ZOffset
+
+        # Show Not_Home/Not Calibrated as initial state
         self.label9["text"] = "Not_Home"
         self.label9["bg"] = "red"
         self.label22["text"] = "Not Calibrated"
-        self.label22["bg"] = "red"        
-        
+        self.label22["bg"] = "red"
+
+        # Refresh the contextual X/Y display (defaults to scan offsets)
+        self.refresh_offset_display()
+    
     def started_homing(self):
         if not self.check_door_before_action("Home"):
             return
@@ -1710,33 +1691,19 @@ class GUIClass(PortDefineClass):
             self.label11["text"] = "Home"
         self.stopped_flashing()
 
-    def scan_started(self):
-        if not self.check_door_before_action("Start Scanning"):
-            return
-        if self.label9.cget("text") == "Not_Home":
-            messagebox.showerror("Error", "Home Pos not yet Completed")
-            return
-        if self.label22.cget("text") == "Not Calibrated":
-            messagebox.showerror("Error", "Calibration not yet Completed")
-            return
-        if self.label11.cget("text") != "Home":
-            return
-        self.scan.config(state='disabled')
-        threading.Thread(target=self.scan_start).start()
-
     def goingto_scanpos(self):
         if not self.check_door_before_action("Move to Scanning Position"):
             return
         if self.label9.cget("text") == "Not_Home":
             messagebox.showerror("Error", "Home Pos not yet Completed")
-            self.GotoScanButton.config(state='normal')
+            self.MoveScanButton.config(state='normal')
             return
         if self.label22.cget("text") != "Calibrated":
             messagebox.showerror("Error", "Calibration not yet Completed")
             return
         if self.label11.cget("text") != "Home":
             return
-        self.GotoScanButton.config(state='disabled')
+        self.MoveScanButton.config(state='disabled')
         self.up_button.config(state='disabled')
         self.down_button.config(state='disabled')
         StatusDataClass.ScanHt = int(float(self.label25.cget("text")) * 10) * 39
@@ -1755,8 +1722,10 @@ class GUIClass(PortDefineClass):
             sys.tracebacklimit = 0
             raise ValueError()
         self.stopped_flashing()
-        self.GotoScanButton.config(state='normal')
+        self.MoveScanButton.config(state='normal')
         self.label11["text"] = "Scan Pos"
+        # Refresh display to show scan offsets in the right-side labels
+        self.refresh_offset_display()
         
     def goingto_unloadpos(self):
         if not self.check_door_before_action("Unload"):
@@ -1804,11 +1773,11 @@ class GUIClass(PortDefineClass):
             return
         if self.label9.cget("text") == "Not_Home":
             messagebox.showerror("Error", "Home Pos not yet Completed")
-            self.GotoScanButton.config(state='normal')
+            self.MoveScanButton.config(state='normal')
             return
         if self.label11.cget("text") != "Home":
             return
-        self.GotoCalibButton.config(state='disabled')
+        self.MoveCalibButton.config(state='disabled')
         threading.Thread(target=self.goto_calpos).start()
 
     def goto_calpos(self):
@@ -1823,8 +1792,10 @@ class GUIClass(PortDefineClass):
             sys.tracebacklimit = 0
             raise ValueError()
         self.stopped_flashing()
-        self.GotoCalibButton.config(state='normal')
+        self.MoveCalibButton.config(state='normal')
         self.label11["text"] = "Calibration Pos"
+        # Refresh display to show calibration offsets in the right-side labels
+        self.refresh_offset_display()
         
     def starting_calib(self):
         if not self.check_door_before_action("Calibrate Z-Height"):
@@ -1854,19 +1825,33 @@ class GUIClass(PortDefineClass):
             self.label22["bg"] = "green"
 
     def update_offset_file(self):
-        f = open('/home/pi/Desktop/migne/offset.txt', 'w+')
-        f.write( f'{self.label4["text"]},{self.label5["text"]},{self.label6["text"]},{self.label19["text"]},{self.label20["text"]},{self.label28["text"]}' )
-        f.close()
+        # Write offsets from StatusDataClass in same order as previous file format
+        try:
+            f = open('/home/pi/Desktop/migne/offset.txt', 'w+')
+            f.write(f'{StatusDataClass.x_offset},{StatusDataClass.y_offset},{StatusDataClass.z_offset},{StatusDataClass.xcal_offset},{StatusDataClass.ycal_offset},{StatusDataClass.ZOffset}')
+            f.close()
+        except Exception as e:
+            print("Failed to write offset file:", e)
 
     def update_offset_label(self):
-        self.label5["text"] = StatusDataClass.y_offset
-        self.label4["text"] = StatusDataClass.x_offset
+        # Update labels based on the StatusDataClass values. The X/Y right-side labels are context-sensitive
         self.label6["text"] = StatusDataClass.z_offset
-        self.label19["text"] = StatusDataClass.xcal_offset
-        self.label20["text"] = StatusDataClass.ycal_offset
         self.label28["text"] = StatusDataClass.ZOffset
-        
+        # Refresh the context-sensitive X/Y display
+        self.refresh_offset_display()
+        # Persist offsets
         self.update_offset_file()
+
+    def refresh_offset_display(self):
+        # If currently in calibration position, display calibration offsets
+        pos = self.label11.cget("text")
+        if pos == "Calibration Pos":
+            self.label4["text"] = StatusDataClass.xcal_offset
+            self.label5["text"] = StatusDataClass.ycal_offset
+        else:
+            # default to scan offsets (also used while at Home)
+            self.label4["text"] = StatusDataClass.x_offset
+            self.label5["text"] = StatusDataClass.y_offset
 
     def ZHtDownPosOffset(self):
         
@@ -1887,7 +1872,6 @@ class GUIClass(PortDefineClass):
             StatusDataClass.ZOffset -= 100        
         
         self.update_offset_label()
-        self.update_offset_file()
         
     def ZHtUpPosOffset(self):
         
@@ -1908,55 +1892,50 @@ class GUIClass(PortDefineClass):
             StatusDataClass.ZOffset += 100   
         
         self.update_offset_label()
-        self.update_offset_file()
 
     def XZSetPosOffset(self):
-        
-        if self.label11.cget("text") != str("Scan Pos"):
-            messagebox.showerror("Error", "Go to Scan Position first")
+        # Global X offset setter: acts on scan or calibration offsets depending on current position
+        current_pos = self.label11.cget("text")
+        try:
+            val = int(self.get_X_offset_val())
+        except Exception:
+            messagebox.showerror("Error", "Invalid X offset value")
             return
 
-        StatusDataClass.x_offset  += int(self.get_X_offset_val())
-        self.xy_move.XmoveCorrect(int(self.get_X_offset_val()))
+        if current_pos == "Scan Pos":
+            StatusDataClass.x_offset += val
+            self.xy_move.XmoveCorrect(val)
+        elif current_pos == "Calibration Pos":
+            StatusDataClass.xcal_offset += val
+            self.xy_move.XmoveCorrect(val)
+        else:
+            messagebox.showerror("Error", "Go to Scan Position or Calibration Position first")
+            return
 
         self.update_offset_label()
-        self.update_offset_file()
     
     def YSetPosOffset(self):
-
-        if self.label11.cget("text") != str("Scan Pos"):
-            messagebox.showerror("Error", "Go to Scan Position first")
+        # Global Y offset setter: acts on scan or calibration offsets depending on current position
+        current_pos = self.label11.cget("text")
+        try:
+            val = int(self.get_Y_offset_val())
+        except Exception:
+            messagebox.showerror("Error", "Invalid Y offset value")
             return
 
-        StatusDataClass.y_offset += int(self.get_Y_offset_val())
-        self.xy_move.YmoveCorrect2( int( self.get_Y_offset_val()))
+        if current_pos == "Scan Pos":
+            StatusDataClass.y_offset += val
+            self.xy_move.YmoveCorrect2(val)
+        elif current_pos == "Calibration Pos":
+            StatusDataClass.ycal_offset += val
+            self.xy_move.YmoveCorrect2(val)
+        else:
+            messagebox.showerror("Error", "Go to Scan Position or Calibration Position first")
+            return
 
         self.update_offset_label()
-        self.update_offset_file()
         
-    def XCalPosOffset(self):
-        
-        if self.label11.cget("text") != str("Calibration Pos"):
-            messagebox.showerror("Error", "Go to Calibration Position first")
-            return
-        
-        StatusDataClass.xcal_offset += int(self.get_XCal_offset_val())
-        self.xy_move.XmoveCorrect( int( self.get_XCal_offset_val() ) )
-        
-        self.update_offset_label()
-        self.update_offset_file()
-        
-    def YCalPosOffset(self):
-        
-        if self.label11.cget("text") != str("Calibration Pos"):
-            messagebox.showerror("Error", "Go to Calibration Position first")
-            return
-        
-        StatusDataClass.ycal_offset += int(self.get_YCal_offset_val())
-        self.xy_move.YmoveCorrect2( int( self.get_YCal_offset_val() ) )
-        
-        self.update_offset_label()
-        self.update_offset_file()
+    # left-side calibration-specific move functions removed (not used anymore)
 
     def ClearOffset(self):
         
@@ -1967,8 +1946,8 @@ class GUIClass(PortDefineClass):
             StatusDataClass.z_offset = 0
             StatusDataClass.xcal_offset = 0
             StatusDataClass.ycal_offset = 0
+            StatusDataClass.ZOffset = 0
             self.update_offset_label()
-            self.update_offset_file()
         else:
             return
 
