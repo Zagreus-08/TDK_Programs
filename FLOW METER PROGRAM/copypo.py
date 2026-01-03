@@ -11,6 +11,7 @@ import csv
 import time
 import math
 import random
+import threading
 import struct
 import collections
 import datetime
@@ -47,7 +48,6 @@ HOUR_SUM_DIR = os.path.join(LOGS_DIR, "hourly_summary")
 
 # Default settings (can be changed via UI)
 DEFAULT_SETTINGS = {
-    "simulate": True,           # True = simulated data, False = real RS485
     "com_port": "",             # Auto-detect or manual (e.g., "COM3" or "/dev/ttyUSB0")
     "baud_rate": 9600,          # MF5708 default baud rate
     "slave_address": 1,         # Modbus slave address (1-247)
@@ -261,36 +261,6 @@ class MF5708Sensor:
                 print(f"[DEBUG] Parse error: {e}")
             return None
 
-
-# ============== SIMULATOR ==============
-class FlowSimulator:
-    """Simulates MF5708 sensor data for testing without hardware."""
-    def __init__(self):
-        self.total_flow = 0.0
-        self.battery = 100.0
-        self.temp = 25.0
-        self.last_temp_update = 0
-        self.start_time = time.time()
-
-    def read_all(self):
-        t = time.time()
-        base_flow = 5.0 + 3.0 * math.sin((t - self.start_time) / 30.0)
-        noise = random.uniform(-0.6, 0.6)
-        flow = max(0.0, base_flow + noise)
-        self.total_flow += flow * 0.001
-        self.battery = max(0.0, self.battery - random.uniform(0.0005, 0.0025))
-        if t - self.last_temp_update > 5:
-            self.temp = 24.0 + random.uniform(-1.2, 1.2)
-            self.last_temp_update = t
-        return (round(flow, 2), round(self.total_flow, 3), round(self.temp, 1))
-
-    def get_battery_text(self):
-        if self.battery > 50:
-            return f"{self.battery:.0f}% (Good)"
-        elif self.battery > 20:
-            return f"{self.battery:.0f}% (Low)"
-        else:
-            return f"{self.battery:.0f}% (Replace)"
 
 
 # ============== LOGS WINDOW (popup) ==============
@@ -520,6 +490,14 @@ class FlowDashboard:
             self.root.geometry("1400x900")
             self.root.minsize(1200, 700)
 
+        # Live data buffers
+        self.log_buffer = []
+        self.last_log_flush = time.time()
+        self.latest_reading = (0.0, 0.0)
+        self.sensor_lock = threading.Lock()
+        self.last_valid = (0.0, 0.0)
+        self.last_sensor_time = time.time()
+        
         # State
         self.running = True
         self.update_after_id = None
@@ -534,7 +512,6 @@ class FlowDashboard:
         self.settings["com_port"] = self._auto_detect_port()
 
         # Sensor/Simulator
-        self.simulator = FlowSimulator()
         self.sensor = MF5708Sensor()
         self.connection_status = "Disconnected"
 
@@ -545,6 +522,9 @@ class FlowDashboard:
 
         # Build UI
         self._build_ui()
+
+        threading.Thread(target=self._sensor_worker, daemon=True).start()
+
 
         # Start loops
         self._schedule_update()
@@ -587,18 +567,18 @@ class FlowDashboard:
         ctk.CTkLabel(info_frame, text=f"Platform: {PLATFORM_NAME}",
                     font=ctk.CTkFont(size=11)).pack(anchor="w", padx=8, pady=4)
 
-        self.status_label = ctk.CTkLabel(panel, text="● Simulation Mode",
-                                         text_color="#00ff88", font=ctk.CTkFont(size=12, weight="bold"))
+        self.status_label = ctk.CTkLabel(
+            panel,
+            text="● Disconnected",
+            text_color="#ff6b6b",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+
         self.status_label.pack(anchor="w", padx=12, pady=(12, 6))
 
         ctk.CTkLabel(panel, text="Data Source:", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=12, pady=(8, 2))
-        self.mode_var = tk.StringVar(value="simulate")
         mode_frame = ctk.CTkFrame(panel, fg_color="transparent")
         mode_frame.pack(fill="x", padx=12)
-        ctk.CTkRadioButton(mode_frame, text="Simulation", variable=self.mode_var,
-                          value="simulate", command=self._on_mode_change).pack(anchor="w", pady=2)
-        ctk.CTkRadioButton(mode_frame, text="RS485 Hardware", variable=self.mode_var,
-                          value="hardware", command=self._on_mode_change).pack(anchor="w", pady=2)
 
         ctk.CTkLabel(panel, text="Serial Port:", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=12, pady=(12, 2))
         port_frame = ctk.CTkFrame(panel, fg_color="transparent")
@@ -681,6 +661,7 @@ class FlowDashboard:
         graph_panel.grid(row=1, column=0, sticky="nsew", padx=8, pady=(6, 8))
         graph_panel.grid_rowconfigure(0, weight=1)
         graph_panel.grid_columnconfigure(0, weight=1)
+        
 
         self.fig, self.ax = plt.subplots(figsize=(10, 5))
         self.fig.patch.set_facecolor('#0f1724')
@@ -719,6 +700,10 @@ class FlowDashboard:
             spine.set_color('#cccccc')
 
         self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+        
+        self.flow_line, = self.ax.plot([], [], label="Flow (SLPM)")
+        self.total_line, = self.ax.plot([], [], label="Total (NCM)")
+        self.ax.legend()
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_panel)
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
@@ -735,15 +720,6 @@ class FlowDashboard:
         ctk.CTkButton(ctrl, text=" Exit", fg_color="#dc3545", command=self._exit_now).grid(row=0, column=4, padx=6, pady=8)
 
     # ==================== SETTINGS CALLBACKS ====================
-    def _on_mode_change(self):
-        if self.mode_var.get() == "simulate":
-            self.settings["simulate"] = True
-            self.status_label.configure(text="● Simulation Mode", text_color="#00ff88")
-            self.error_label.configure(text="")
-        else:
-            self.settings["simulate"] = False
-            if not self.sensor.connected:
-                self.status_label.configure(text="● Disconnected", text_color="#ff6b6b")
 
     def _refresh_ports(self):
         ports = get_available_ports()
@@ -786,29 +762,42 @@ class FlowDashboard:
                 self.status_label.configure(text=f"● Connected: {port}", text_color="#00ff88")
                 self.error_label.configure(text="")
                 self.mode_var.set("hardware")
-                self.settings["simulate"] = False
             else:
                 self.error_label.configure(text=f"Error: {self.sensor.last_error}")
 
     # ==================== SENSOR READING ====================
     def _read_sensor(self):
-        if self.settings["simulate"]:
-            flow, total, _ = self.simulator.read_all()
-            return flow, total
-        else:
-            if not self.sensor.connected:
-                return 0.0, 0.0
-            result = self.sensor.read_all()
-            if result is None:
-                self.error_label.configure(text=f"Read error: {self.sensor.last_error}")
-                return 0.0, 0.0
-            flow, total, _ = result
-            return round(flow, 2), round(total, 3)
+        if not self.sensor.connected:
+            return self.last_valid
+
+        result = self.sensor.read_all()
+        if result is None:
+            self.error_label.configure(text=f"Read error: {self.sensor.last_error}")
+            return self.last_valid
+
+        with self.sensor_lock:
+            flow, total, _ = self.latest_reading
+        return round(flow, 2), round(total, 3)
+
+
+    def _sensor_worker(self):
+        while self.running:
+            if self.sensor.connected:
+                result = self.sensor.read_all()
+                if result:
+                    with self.sensor_lock:
+                        self.latest_reading = result
+            time.sleep(self.settings["update_interval_ms"] / 1000)
 
     # ==================== UPDATE LOOPS ====================
     def _schedule_update(self):
         if not self.running:
             return
+        try:
+            append_log_(flow, total)
+        except Exception:
+            pass
+        
         self._do_update()
         self.update_after_id = self.root.after(self.settings["update_interval_ms"], self._schedule_update)
 
@@ -853,11 +842,13 @@ class FlowDashboard:
                     ys_total.append(tt)
             if not xs:
                 return
-            self.ax.clear()
             self.ax.set_facecolor('#ffffff')
-            self.ax.plot(xs, ys_flow, color="#0077CC", linewidth=2, label="Flow (SLPM)")
-            self.ax.plot(xs, ys_total, color="#00AA66", linewidth=1.5, label="Total (NCM)")
+            self.flow_line.set_data(xs, ys_flow)
+            self.total_line.set_data(xs, ys_total)
             self.ax.set_xlim(cutoff, now)
+            self.ax.relim()
+            self.ax.autoscale_view()
+            self.canvas.draw_idle()
             max_val = max(max(ys_flow) if ys_flow else 1, max(ys_total) if ys_total else 1)
             self.ax.set_ylim(0, max_val * 1.3)
             self.ax.set_title("Live Flow / Total", color='black', fontsize=12)
@@ -871,7 +862,7 @@ class FlowDashboard:
             self.canvas.draw_idle()
         except Exception as e:
             print(f"Graph update error: {e}", file=sys.stderr)
-
+            
     # ==================== LOGS POPUP ====================
     def _open_logs_window(self):
         if self.logs_win:

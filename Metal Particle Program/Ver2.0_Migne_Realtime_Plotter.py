@@ -1298,22 +1298,22 @@ class GUIClass(PortDefineClass):
         self.UnloadButton.place(x = 240, y = 250)
         
         # X/Y offset adjustment buttons (hold to continuously move)
-        self.XPlusButton = Button(self.win, text = '→', font = self.buttonFont, height = 1, width = 2)
+        self.XPlusButton = Button(self.win, text = '→', font = self.buttonFont, height = 1, width = 2)
         self.XPlusButton.place(x = 600, y = 245)
         self.XPlusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('X', 1))
         self.XPlusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.XMinusButton = Button(self.win, text = '←', font = self.buttonFont, height = 1, width = 2)
+        self.XMinusButton = Button(self.win, text = '←', font = self.buttonFont, height = 1, width = 2)
         self.XMinusButton.place(x = 470, y = 245)
         self.XMinusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('X', -1))
         self.XMinusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.YPlusButton = Button(self.win, text = '↑', font = self.buttonFont, height = 1, width = 2)
+        self.YPlusButton = Button(self.win, text = '↑', font = self.buttonFont, height = 1, width = 2)
         self.YPlusButton.place(x = 535, y = 210)
         self.YPlusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('Y', 1))
         self.YPlusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
         
-        self.YMinusButton = Button(self.win, text = '↓', font = self.buttonFont, height = 1, width = 2)
+        self.YMinusButton = Button(self.win, text = '↓', font = self.buttonFont, height = 1, width = 2)
         self.YMinusButton.place(x = 535, y = 275)
         self.YMinusButton.bind('<ButtonPress-1>', lambda e: self.start_continuous_move('Y', -1))
         self.YMinusButton.bind('<ButtonRelease-1>', lambda e: self.stop_continuous_move())
@@ -1354,16 +1354,16 @@ class GUIClass(PortDefineClass):
         self.CalibrateButton.place(x = 10, y = 250)
         
         # Arrow buttons for scanning distance (²/¼) and z-height offset (²/¼)
-        self.up_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.increase_value)
+        self.up_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.increase_value)
         self.up_button.place(x = 590, y = 330)
 
-        self.down_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.decrease_value)
+        self.down_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.decrease_value)
         self.down_button.place(x = 715, y = 330)
         
-        self.inc_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.ZHtUpPosOffset)
+        self.inc_button = Button(self.win, text='↑', font=("Helvetica", 20), command=self.ZHtUpPosOffset)
         self.inc_button.place(x = 590, y = 400)
 
-        self.dec_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.ZHtDownPosOffset)
+        self.dec_button = Button(self.win, text='↓', font=("Helvetica", 20), command=self.ZHtDownPosOffset)
         self.dec_button.place(x = 675, y = 400)
 
         self.label1 = Label(self.win, text = 'X Offset:', font = self.labelFont, width = 7, bg='#0046ad', fg='white')
@@ -1421,10 +1421,10 @@ class GUIClass(PortDefineClass):
         self.scan_area_value = Label(self.win, text = str(StatusDataClass.roughness), font = self.labelFont3, width = 5, bg='#0046ad', fg='white')
         self.scan_area_value.place(x = 110, y = 335)
         
-        self.scan_area_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_scan_area)
+        self.scan_area_minus = Button(self.win, text = '↓', font=("Helvetica", 20), command = self.decrease_scan_area)
         self.scan_area_minus.place(x = 20, y = 365)
         
-        self.scan_area_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_scan_area)
+        self.scan_area_plus = Button(self.win, text = '↑', font=("Helvetica", 20), command = self.increase_scan_area)
         self.scan_area_plus.place(x = 80, y = 365)
         
         # Resolution controls
@@ -1434,17 +1434,17 @@ class GUIClass(PortDefineClass):
         self.res_100 = Radiobutton(self.win, text = "100", font = self.labelFont2, command = lambda: self.set_resolution(self.res.get()), 
                                   variable = self.res, value = 1, bg='#0046ad', fg='white', activebackground='#0046ad', activeforeground='white', 
                                   selectcolor='#0046ad', highlightthickness=0)
-        self.res_100.place(x = 150, y = 355)
+        self.res_100.place(x = 160, y = 355)
         
         self.res_150 = Radiobutton(self.win, text = "150", font = self.labelFont2, command = lambda: self.set_resolution(self.res.get()), 
                                   variable = self.res, value = 2, bg='#0046ad', fg='white', activebackground='#0046ad', activeforeground='white', 
                                   selectcolor='#0046ad', highlightthickness=0)
-        self.res_150.place(x = 150, y = 375)
+        self.res_150.place(x = 160, y = 375)
         
         self.res_200 = Radiobutton(self.win, text = "200", font = self.labelFont2, command = lambda: self.set_resolution(self.res.get()), 
                                   variable = self.res, value = 3, bg='#0046ad', fg='white', activebackground='#0046ad', activeforeground='white', 
                                   selectcolor='#0046ad', highlightthickness=0)
-        self.res_200.place(x = 150, y = 395)
+        self.res_200.place(x = 160, y = 395)
         
         # Grid size display
         self.label_grid_info = Label(self.win, text = f'{StatusDataClass.roughness}mm | {StatusDataClass.xdensity}x{StatusDataClass.ydensity} ({StatusDataClass.resolution:,} pts)', font = self.labelFont3, bg='#0046ad', fg='yellow')
@@ -1452,26 +1452,25 @@ class GUIClass(PortDefineClass):
 
         # --- X/Y offset display (left side): show both Scan and Calibration offsets ---
         # Scan offsets (left column)
-        self.label_scan_x = Label(self.win, text = 'Scan X Offset:', font = self.labelFont2, bg='#0046ad', fg='white', width = 12)
-        self.label_scan_x.place(x = 150, y = 350)
-        self.label_x_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 12)
-        self.label_x_val.place(x = 260, y = 350)
+        self.label_scan1 = Label(self.win, text = 'Scanning Pos:', font = self.labelFont2, bg='#0046ad', fg='white', width = 15)
+        self.label_scan1.place(x = 260, y = 335)
+        self.label_cal2 = Label(self.win, text = 'Calibration Pos:', font = self.labelFont2, bg='#0046ad', fg='white', width = 15)
+        self.label_cal2.place(x = 370, y = 335)
+        
+        self.label_scan_x = Label(self.win, text = 'X:', font = self.labelFont, bg='#0046ad', fg='white', width = 5)
+        self.label_scan_x.place(x = 240, y = 360)
+        self.label_x_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 5)
+        self.label_x_val.place(x = 290, y = 360)
+        self.label_cal_x_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 5)
+        self.label_cal_x_val.place(x = 390, y = 360)
 
-        self.label_scan_y = Label(self.win, text = 'Scan Y Offset:', font = self.labelFont2, bg='#0046ad', fg='white', width = 12)
-        self.label_scan_y.place(x = 150, y = 380)
-        self.label_y_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 12)
-        self.label_y_val.place(x = 260, y = 380)
+        self.label_scan_y = Label(self.win, text = 'Y:', font = self.labelFont, bg='#0046ad', fg='white', width = 5)
+        self.label_scan_y.place(x = 240, y = 385)
+        self.label_y_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 5)
+        self.label_y_val.place(x = 290, y = 385)
+        self.label_cal_y_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 5)
+        self.label_cal_y_val.place(x = 390, y = 385)
 
-        # Calibration offsets (right column)
-        self.label_cal_x = Label(self.win, text = 'Cal X Offset:', font = self.labelFont2, bg='#0046ad', fg='white', width = 12)
-        self.label_cal_x.place(x = 360, y = 350)
-        self.label_cal_x_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 12)
-        self.label_cal_x_val.place(x = 470, y = 350)
-
-        self.label_cal_y = Label(self.win, text = 'Cal Y Offset:', font = self.labelFont2, bg='#0046ad', fg='white', width = 12)
-        self.label_cal_y.place(x = 360, y = 380)
-        self.label_cal_y_val = Label(self.win, text = '---', font = self.labelFont, bg='#0046ad', fg='white', width = 12)
-        self.label_cal_y_val.place(x = 470, y = 380)
 
         self.label15 = Label(self.win, text = 'Run Mode:', font = self.labelFont3, height = 1, width = 10, bg='#0046ad', fg='white')
         self.label15.place(x = 450, y = 70)
@@ -1951,7 +1950,8 @@ class GUIClass(PortDefineClass):
         self.label22["bg"] = "red"
 
         # Refresh the contextual X/Y display (defaults to scan offsets)
-        self.refresh_offset_display()
+        # show left-side static labels on startup
+        self.refresh_offset_display(update_left=True)
         
         # Offset entries will be shown/updated by refresh_offset_display() on startup
     
@@ -1968,7 +1968,7 @@ class GUIClass(PortDefineClass):
         self.label11["text"] = "Homing"
         self.started_flashing()
         # Hide offsets during homing
-        self.refresh_offset_display()
+        self.refresh_offset_display(update_left=False)
         
         self.home.Home()
         self.HomeButton.config(state='normal')
@@ -1983,8 +1983,8 @@ class GUIClass(PortDefineClass):
             self.label9["bg"] = "green"
             self.label11["text"] = "Home"
         self.stopped_flashing()
-        # Keep offsets hidden at Home position
-        self.refresh_offset_display()
+        # Update offsets now that homing is finished (show updated left-side values)
+        self.update_offset_label()
 
     def goingto_scanpos(self):
         if not self.check_door_before_action("Move to Scanning Position"):
@@ -2007,7 +2007,7 @@ class GUIClass(PortDefineClass):
         self.label11["text"] = "Going to ScanPos"
         self.started_flashing()
         # Hide offsets while moving to scan position
-        self.refresh_offset_display()
+        self.refresh_offset_display(update_left=False)
         
         self.data_scan.ScanPos()
         if self.xy_move.EMGSwitch():
@@ -2019,8 +2019,8 @@ class GUIClass(PortDefineClass):
         self.stopped_flashing()
         self.MoveScanButton.config(state='normal')
         self.label11["text"] = "Scan Pos"
-        # Refresh display to show scan offsets in the right-side labels
-        self.refresh_offset_display()
+        # Refresh display to show scan offsets in the right-side labels (do not change left-side static labels)
+        self.refresh_offset_display(update_left=False)
         
     def goingto_unloadpos(self):
         if not self.check_door_before_action("Unload"):
@@ -2040,7 +2040,7 @@ class GUIClass(PortDefineClass):
         self.label11["text"] = "Unloading"
         self.started_flashing()
         # Hide offsets during unloading
-        self.refresh_offset_display()
+        self.refresh_offset_display(update_left=False)
 
         # Now check the previous label value instead of the current one
         if previous_label == "Scan Pos":
@@ -2062,8 +2062,8 @@ class GUIClass(PortDefineClass):
         self.stopped_flashing()
         self.UnloadButton.config(state='normal')
         self.label11["text"] = "Home"
-        # Keep offsets hidden at Home position
-        self.refresh_offset_display()
+        # Update offsets now that we are back at Home
+        self.update_offset_label()
 
     def goingto_calpos(self):
         if not self.check_door_before_action("Goto Z-Height Calibration Position"):
@@ -2081,7 +2081,7 @@ class GUIClass(PortDefineClass):
         self.label11["text"] = "Going to CalPos"
         self.started_flashing()
         # Hide offsets while moving to calibration position
-        self.refresh_offset_display()
+        self.refresh_offset_display(update_left=False)
         
         self.data_scan.ZHtCalibPos()
         if self.xy_move.EMGSwitch():
@@ -2093,8 +2093,8 @@ class GUIClass(PortDefineClass):
         self.stopped_flashing()
         self.MoveCalibButton.config(state='normal')
         self.label11["text"] = "Calibration Pos"
-        # Refresh display to show calibration offsets in the right-side labels
-        self.refresh_offset_display()
+        # Refresh display to show calibration offsets in the right-side labels (do not change left-side static labels)
+        self.refresh_offset_display(update_left=False)
         
     def starting_calib(self):
         if not self.check_door_before_action("Calibrate Z-Height"):
@@ -2111,7 +2111,7 @@ class GUIClass(PortDefineClass):
         self.label11["text"] = "Calibrating"
         self.started_flashing()
         # Hide offsets during calibration
-        self.refresh_offset_display()
+        self.refresh_offset_display(update_left=False)
         
         self.data_scan.GoCalib()
         StatusDataClass.z_offset = StatusDataClass.zcal_offset
@@ -2125,8 +2125,8 @@ class GUIClass(PortDefineClass):
             self.label22["text"] = "Calibrated"
             self.label11["text"] = "Home"
             self.label22["bg"] = "green"
-            # Keep offsets hidden at Home position after calibration
-            self.refresh_offset_display()
+            # Update offsets now that calibration finished and we are at Home
+            self.update_offset_label()
 
     def update_offset_file(self):
         # Write offsets from StatusDataClass in same order as previous file format
@@ -2142,22 +2142,26 @@ class GUIClass(PortDefineClass):
         # Update calibrate button text instead of a separate label
         self.calib_btn_var.set(f"Calibrate Z-Height\nZ-Ht: {StatusDataClass.z_offset}")
         self.label28["text"] = StatusDataClass.ZOffset
-        # Refresh the context-sensitive X/Y display
-        self.refresh_offset_display()
+        # Refresh the context-sensitive X/Y display (also update left-side static values)
+        self.refresh_offset_display(update_left=True)
         # Persist offsets
         self.update_offset_file()
     
 
 
-    def refresh_offset_display(self):
-        # Always update left-side static labels for Scan and Calibration offsets
+    def refresh_offset_display(self, update_left=False):
+        """Update left-side static labels only when update_left=True. Right-side contextual labels are
+        updated based on current position state (Scan Pos / Calibration Pos) every time.
+        """
+        # Update left-side static labels only when explicitly requested
         try:
-            self.label_x_val.config(text=str(StatusDataClass.x_offset))
-            self.label_y_val.config(text=str(StatusDataClass.y_offset))
-            self.label_cal_x_val.config(text=str(StatusDataClass.xcal_offset))
-            self.label_cal_y_val.config(text=str(StatusDataClass.ycal_offset))
+            if update_left:
+                self.label_x_val.config(text=str(StatusDataClass.x_offset))
+                self.label_y_val.config(text=str(StatusDataClass.y_offset))
+                self.label_cal_x_val.config(text=str(StatusDataClass.xcal_offset))
+                self.label_cal_y_val.config(text=str(StatusDataClass.ycal_offset))
         except Exception:
-            passca
+            pass
 
         # Update right-side contextual display (Scan/Calibration or ---)
         pos = self.label11.cget("text")
@@ -2230,6 +2234,8 @@ class GUIClass(PortDefineClass):
     def stop_continuous_move(self):
         """Stop continuous movement when button is released"""
         self.continuous_move_active = False
+        # Update labels now that adjustments are finished
+        self.update_offset_label()
     
     def do_continuous_move(self):
         """Perform one step of continuous movement"""
@@ -2262,11 +2268,10 @@ class GUIClass(PortDefineClass):
                 else:
                     StatusDataClass.ycal_offset += move_amount
             
-            # Update the display
-            self.update_offset_label()
+            # Do not update left-side labels during continuous movement (update when stopped)
             
             # Schedule next move with appropriate delay based on speed
-            # Low speed: 100ms delay (10 steps/sec), Medium speed: 50ms delay (20 steps/sec)
+            # Low speed: 100ms delay (10 steps/sec), Medium speed: 50ms: delay (20 steps/sec)
             delay = 100 if self.xy_mov == 1 else 100
             if self.continuous_move_active:
                 self.win.after(delay, self.do_continuous_move)
@@ -2323,4 +2328,5 @@ class GUIClass(PortDefineClass):
 
 if __name__ == '__main__':
     main()
+
 
