@@ -265,25 +265,55 @@ class MF5708Sensor:
 
 # ============== LOGS WINDOW (popup) ==============
 class LogsWindow:
-    """Popup Toplevel for browsing logs (months/days) and viewing CSV contents."""
+    """Popup Toplevel for browsing logs and viewing CSV contents."""
+
     def __init__(self, parent_dashboard):
         self.parent = parent_dashboard
+
+        # ✅ CREATE TOPLEVEL FIRST (CRITICAL)
         self.top = tk.Toplevel(self.parent.root)
-        title = f"Data Logs - {PLATFORM_NAME}"
-        self.top.title(title)
-        # Make window size suitable for small displays (RPI 7")
-        if IS_RASPBERRY_PI:
-            self.top.geometry("780x420")
-            self.top.minsize(480, 320)
-        else:
-            self.top.geometry("900x600")
-            self.top.minsize(600, 420)
-        self.top.transient(self.parent.root)
-        # Widgets
-        self._build_ui()
-        self.load_months()
-        # Register on parent so live updates can push to logs window
-        self.parent.logs_win = self
+
+        try:
+            title = f"Data Logs - {PLATFORM_NAME}"
+            self.top.title(title)
+
+            # Size handling
+            if IS_RASPBERRY_PI:
+                self.top.geometry("780x420")
+                self.top.minsize(480, 320)
+            else:
+                self.top.geometry("900x600")
+                self.top.minsize(600, 420)
+
+            # ⚠️ transient causes issues on Pi
+            if not IS_RASPBERRY_PI:
+                self.top.transient(self.parent.root)
+
+            self._build_ui()
+            self.load_months()
+
+            # Register with parent ONLY after success
+            self.parent.logs_win = self
+
+            # ---- RPI WINDOW MANAGER FIX ----
+            self.top.update_idletasks()
+            self.top.lift()
+            self.top.focus_force()
+
+            if IS_RASPBERRY_PI:
+                self.top.attributes("-topmost", True)
+                self.top.after(300, lambda: self.top.attributes("-topmost", False))
+
+        except Exception as e:
+            # ✅ CLEAN FAIL — destroy partial window
+            try:
+                self.top.destroy()
+            except Exception:
+                pass
+
+            self.parent.logs_win = None
+            raise RuntimeError(str(e))
+
 
     def _build_ui(self):
         self.top.grid_rowconfigure(3, weight=1)
@@ -794,7 +824,7 @@ class FlowDashboard:
         if not self.running:
             return
         try:
-            append_log_(flow, total)
+            append_log(flow, total)
         except Exception:
             pass
         
@@ -865,18 +895,27 @@ class FlowDashboard:
             
     # ==================== LOGS POPUP ====================
     def _open_logs_window(self):
-        if self.logs_win:
-            try:
-                self.logs_win.top.deiconify()
-                self.logs_win.top.lift()
-                return
-            except Exception:
-                self.logs_win = None
-        # Create new LogsWindow
+        # Window exists AND is valid
+        if (
+            self.logs_win
+            and hasattr(self.logs_win, "top")
+            and self.logs_win.top.winfo_exists()
+        ):
+            self.logs_win.top.deiconify()
+            self.logs_win.top.lift()
+            self.logs_win.top.focus_force()
+            return
+
+        self.logs_win = None  # reset bad reference
+
         try:
             LogsWindow(self)
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to open logs window:\n{e}")
+            messagebox.showerror(
+                "Error",
+                f"Failed to open logs window:\n{e}"
+            )
+
             
     def _switch_to_live(self):
         """Switch back to live view mode and refresh graph/table immediately."""
