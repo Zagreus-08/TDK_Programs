@@ -52,9 +52,6 @@ z_range_locked = False   # Toggle for lock mode
 locked_zmin = -0.1       # Stored locked values
 locked_zmax = 0.1
 
-# Loaded data tracking (for colorbar adjustment while keeping actual indicators)
-loaded_data_cache = None  # Store loaded data for re-rendering with adjusted colorbar
-
 # ---------------- Image ----------------
 # Try multiple paths for Migne image (Raspberry Pi and Windows)
 possible_image_paths = [
@@ -658,7 +655,7 @@ def load_raw_data():
         loaded_filename = None
 
 def show_loaded(xs, ys, zs):
-    global zmin, zmax, ax, axh, axm, cax, x_range, y_max, loaded_data_cache
+    global zmin, zmax, ax, axh, axm, cax, x_range, y_max
 
     if len(xs) == 0 or len(ys) == 0:
         messagebox.showerror("Error", "Loaded CSV has no data.")
@@ -690,28 +687,11 @@ def show_loaded(xs, ys, zs):
     xs = xs * 100 / x_range
     ys = ys * 100 / y_max
 
-    # Calculate actual data range (ALWAYS shown in indicators)
-    actual_zmin = np.min(zs)
-    actual_zmax = np.max(zs)
-    print(f"[INFO] Loaded data Z-range: [{actual_zmin:.6f}, {actual_zmax:.6f}]")
-    
-    # Determine colorbar range (can be adjusted via lock controls)
-    if z_range_locked:
-        colorbar_zmin = locked_zmin
-        colorbar_zmax = locked_zmax
-        print(f"[INFO] Using adjusted colorbar range: [{colorbar_zmin:.6f}, {colorbar_zmax:.6f}]")
+    # Set Z-range based on lock state
+    if not z_range_locked:
+        zmin, zmax = np.min(zs), np.max(zs)
     else:
-        colorbar_zmin = actual_zmin
-        colorbar_zmax = actual_zmax
-    
-    # Cache loaded data for re-rendering when colorbar is adjusted
-    loaded_data_cache = {
-        'xs': xs.copy(),
-        'ys': ys.copy(),
-        'zs': zs.copy(),
-        'actual_zmin': actual_zmin,
-        'actual_zmax': actual_zmax
-    }
+        zmin, zmax = locked_zmin, locked_zmax
 
     fig.clf()
     spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
@@ -727,11 +707,10 @@ def show_loaded(xs, ys, zs):
     except Exception:
         z_new = griddata((xs, ys), zs, (x_new, y_new), method="nearest", fill_value=0)
 
-    # Use colorbar range (can be adjusted), but indicators show actual range
-    ps = ax.contourf(x_new, y_new, z_new, 128, cmap="jet", vmin=colorbar_zmin, vmax=colorbar_zmax, alpha=0.9)
+    ps = ax.contourf(x_new, y_new, z_new, 128, cmap="jet", vmin=zmin, vmax=zmax, alpha=0.9)
     ax.imshow(im_Migne, extent=[16, 84, 40, 60], alpha=0.08)
-    surf = axh.plot_surface(x_new, y_new, z_new, cmap="jet", vmin=colorbar_zmin, vmax=colorbar_zmax, rstride=1, cstride=1)
-    ax.figure.colorbar(surf, cax=cax, shrink=1, orientation="vertical")
+    surf = axh.plot_surface(x_new, y_new, z_new, cmap="jet", vmin=zmin, vmax=zmax)
+    ax.figure.colorbar(ps, cax=cax)
 
     axm.imshow(im_Migne, alpha=0.7)
     axm.axis("off")
@@ -741,13 +720,6 @@ def show_loaded(xs, ys, zs):
         axm.text(0.5, -0.1, f"Loaded: {loaded_filename}", transform=axm.transAxes,
                 ha='center', va='top', fontsize=10, color='black', weight='bold')
 
-    # Set 2D plot properties
-    ax.set_xlim([0, 100])
-    ax.set_ylim([0, 100])
-    ax.grid(True, linestyle="--", alpha=0.7)
-    ax.set_facecolor("white")
-    
-    # Set 3D plot view and properties
     axh.view_init(elev=20, azim=300)
 
     # Handle set_box_aspect for Raspberry Pi compatibility
@@ -759,9 +731,12 @@ def show_loaded(xs, ys, zs):
     # Set axis limits - ALWAYS 0-100 to keep square coordinates
     axh.set_xlim([0, 100])
     axh.set_ylim([0, 100])
-    # For 3D Z-axis in loaded data, use colorbar range (can be adjusted)
-    axh.set_zlim([colorbar_zmin, colorbar_zmax])
-    axh.grid(True, linestyle="-", alpha=0.7)
+    # For 3D Z-axis in loaded data, use actual data range for display
+    display_zmin = np.min(zs) if z_range_locked else zmin
+    display_zmax = np.max(zs) if z_range_locked else zmax
+    axh.set_zlim([display_zmin, display_zmax])
+    ax.set_xlim([0, 100])
+    ax.set_ylim([0, 100])
 
     # Force 2D equal aspect
     try:
@@ -780,13 +755,10 @@ def show_loaded(xs, ys, zs):
     axh.set_yticks(np.linspace(0, 100, 6))
     axh.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
 
-    # Display Z min/max values on the 3D plot (ALWAYS show actual data range, not colorbar range)
-    axh.text2D(0.70, 0.95, f"Z Max: {actual_zmax:.6f}", transform=axh.transAxes)
-    axh.text2D(0.70, 0.90, f"Z Min: {actual_zmin:.6f}", transform=axh.transAxes)
+    # Display Z min/max values on the 3D plot
+    axh.text2D(0.70, 0.95, f"Z Max: {zmax:.6f}", transform=axh.transAxes)
+    axh.text2D(0.70, 0.90, f"Z Min: {zmin:.6f}", transform=axh.transAxes)
 
-    # Set 3D plot background color
-    axh.set_facecolor((0.9, 0.9, 0.9))
-    
     # Handle pane properties for Raspberry Pi compatibility
     try:
         axh.xaxis.pane.fill = False
@@ -795,6 +767,7 @@ def show_loaded(xs, ys, zs):
         axh.xaxis.pane.set_edgecolor('w')
         axh.yaxis.pane.set_edgecolor('w')
         axh.zaxis.pane.set_edgecolor('w')
+        axh.set_facecolor((0, 0, 0, 0))
     except AttributeError:
         pass  # Older matplotlib versions might not have these properties
 
@@ -808,10 +781,9 @@ def show_loaded(xs, ys, zs):
 
 def resume_live():
     """Reset the plot to blank display and clear all data"""
-    global pause_live, x, y, z, zmin, zmax, ax, axh, axm, cax, loaded_filename, loaded_data_cache
+    global pause_live, x, y, z, zmin, zmax, ax, axh, axm, cax, loaded_filename
     pause_live = False
     loaded_filename = None  # Clear loaded filename when resuming live
-    loaded_data_cache = None  # Clear loaded data cache
     # Clear all data buffers
     x.clear()
     y.clear()
@@ -1094,7 +1066,7 @@ if __name__ == '__main__':
         
         # Apply button
         def apply_changes():
-            global locked_zmin, locked_zmax, loaded_data_cache
+            global locked_zmin, locked_zmax
             try:
                 new_zmin = float(zmin_entry.get())
                 new_zmax = float(zmax_entry.get())
@@ -1107,12 +1079,6 @@ if __name__ == '__main__':
                 locked_zmax = new_zmax
                 z_range_label.config(text=f"Locked: {locked_zmin:.4f} to {locked_zmax:.4f}")
                 print(f"[INFO] Z-range adjusted to [{locked_zmin:.4f}, {locked_zmax:.4f}]")
-                
-                # If viewing loaded data, re-render with new colorbar range
-                if pause_live and loaded_data_cache is not None:
-                    print("[INFO] Re-rendering loaded data with adjusted colorbar range")
-                    show_loaded(loaded_data_cache['xs'], loaded_data_cache['ys'], loaded_data_cache['zs'])
-                
                 dialog.destroy()
             except ValueError:
                 messagebox.showerror("Invalid Input", "Please enter valid numbers!")
@@ -1141,7 +1107,7 @@ if __name__ == '__main__':
             adjust_range_btn.config(state="normal")
         else:
             # Unlocked - return to auto-range
-            z_range_label.config(text="Auto-range enabled", fg="green")
+            z_range_label.config(text="Auto-range enabled", fg="green"\\pbio00029\SharedKeyence\Lans\BMS Program\Ver1.5_Migne_Realtime_Plotter.py)
             print("[INFO] Z-range unlocked - auto-ranging enabled")
             # Disable adjustment button when unlocked
             adjust_range_btn.config(state="disabled")

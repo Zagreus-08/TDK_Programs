@@ -1378,7 +1378,7 @@ class GUIClass(PortDefineClass):
         # Contextual offset display (these show scan offsets or calibration offsets depending on current position)
         self.label4 = Label(self.win, text = '---', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
         self.label4.place(x = 580, y = 150)
-        
+            
         self.label5 = Label(self.win, text = '---', font = self.labelFont, height = 1, width = 5, bg='#0046ad', fg='white')
         self.label5.place(x = 580, y = 180)
         
