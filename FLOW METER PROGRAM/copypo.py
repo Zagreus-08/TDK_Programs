@@ -606,9 +606,7 @@ class FlowDashboard:
 
         self.status_label.pack(anchor="w", padx=12, pady=(12, 6))
 
-        ctk.CTkLabel(panel, text="Data Source:", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=12, pady=(8, 2))
-        mode_frame = ctk.CTkFrame(panel, fg_color="transparent")
-        mode_frame.pack(fill="x", padx=12)
+        # Removed "Data Source" section to save vertical space in settings panel
 
         ctk.CTkLabel(panel, text="Serial Port:", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=12, pady=(12, 2))
         port_frame = ctk.CTkFrame(panel, fg_color="transparent")
