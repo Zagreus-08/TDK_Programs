@@ -198,19 +198,39 @@ class MF5708Sensor:
             if DEBUG_MODE:
                 print(f"[DEBUG] TX (hex): {' '.join(f'{b:02X}' for b in request)}")
             self.serial.write(request)
-            time.sleep(0.05)
+            
+            # Wait for response with retry logic
             expected_len = 3 + 2 * num_regs + 2
-            response = self.serial.read(expected_len)
+            response = bytearray()
+            max_attempts = 10
+            attempt = 0
+            
+            while len(response) < expected_len and attempt < max_attempts:
+                time.sleep(0.05)  # Small delay between reads
+                available = self.serial.in_waiting
+                if available > 0:
+                    chunk = self.serial.read(available)
+                    response.extend(chunk)
+                    if DEBUG_MODE and len(chunk) > 0:
+                        print(f"[DEBUG] Read {len(chunk)} bytes (total: {len(response)}/{expected_len})")
+                attempt += 1
+            
             if DEBUG_MODE:
-                print(f"[DEBUG] Received {len(response)} bytes")
+                print(f"[DEBUG] Final received: {len(response)} bytes")
+                
             if len(response) < expected_len:
-                self.last_error = f"Incomplete response: {len(response)}/{expected_len} bytes"
+                self.last_error = f"Incomplete response: {len(response)}/{expected_len} bytes after {attempt} attempts"
+                if DEBUG_MODE:
+                    print(f"[DEBUG] {self.last_error}")
                 return None
+                
             data = response[:-2]
             recv_crc = response[-2] | (response[-1] << 8)
             calc_crc = self._calc_crc16(data)
             if recv_crc != calc_crc:
                 self.last_error = "CRC mismatch"
+                if DEBUG_MODE:
+                    print(f"[DEBUG] CRC mismatch: expected {calc_crc:04X}, got {recv_crc:04X}")
                 return None
             byte_count = response[2]
             values = []
@@ -470,13 +490,22 @@ class LogsWindow:
         parent_ax = self.parent.ax
         parent_fig = self.parent.fig
         parent_ax.clear()
-        parent_ax.set_facecolor('#0f1724')
+        # Use live-style white theme for month summary
+        parent_ax.set_facecolor('#ffffff')
         parent_ax.bar(days, totals, color="#00ff88", alpha=0.7, label="Total Flow (NCM)")
         parent_ax.plot(days, avg_flows, color="#00d4ff", marker="o", linewidth=2, label="Avg Flow (SLPM)")
-        parent_ax.set_title(f"Monthly Summary ({month})", color='white')
-        parent_ax.tick_params(colors='white')
-        parent_ax.legend(facecolor='#1a1a2e', edgecolor='#333', labelcolor='white')
-        parent_ax.grid(alpha=0.2, color='#444')
+        parent_ax.set_title(f"Monthly Summary ({month})", color='black')
+        parent_ax.tick_params(colors='black')
+        parent_ax.legend(facecolor='#ffffff', edgecolor='#cccccc', labelcolor='black')
+        parent_ax.grid(alpha=0.2, color='#e6e6e6')
+        for spine in parent_ax.spines.values():
+            spine.set_color('#cccccc')
+        # Hide secondary axis (Total) for the monthly view to avoid scale conflicts
+        try:
+            if getattr(self.parent, 'ax2', None):
+                self.parent.ax2.set_visible(False)
+        except Exception:
+            pass
         parent_fig.autofmt_xdate()
         self.parent.canvas.draw_idle()
         self.parent.mode = "month"
@@ -486,14 +515,30 @@ class LogsWindow:
         Update the logs window table with recent live items (list of (datetime, flow, total)).
         This is called by the parent dashboard periodically if logs window is open.
         """
+        # If the toplevel or tree widget was destroyed, clear parent's reference and return
+        if not getattr(self, 'top', None) or not self.top.winfo_exists() or not getattr(self, 'tree', None):
+            try:
+                self.parent.logs_win = None
+            except Exception:
+                pass
+            return
         try:
             # Only keep RECENT_TABLE_SIZE most recent
             tail = items[-RECENT_TABLE_SIZE:]
             # Replace contents with most recent first
-            for r in self.tree.get_children():
-                self.tree.delete(r)
-            for t, f, tot in reversed(tail):
-                self.tree.insert("", tk.END, values=(t.strftime("%Y-%m-%d %H:%M:%S"), f"{f:.2f}", f"{tot:.3f}"))
+            try:
+                # Use a snapshot of children in case they change while iterating
+                children = list(self.tree.get_children())
+                for r in children:
+                    self.tree.delete(r)
+                for t, f, tot in reversed(tail):
+                    self.tree.insert("", tk.END, values=(t.strftime("%Y-%m-%d %H:%M:%S"), f"{f:.2f}", f"{tot:.3f}"))
+            except tk.TclError:
+                # Underlying widget was destroyed; clear parent ref to stop future updates
+                try:
+                    self.parent.logs_win = None
+                except Exception:
+                    pass
         except Exception as e:
             print(f"LogsWindow update error: {e}", file=sys.stderr)
 
@@ -523,7 +568,7 @@ class FlowDashboard:
         # Live data buffers
         self.log_buffer = []
         self.last_log_flush = time.time()
-        self.latest_reading = (0.0, 0.0)
+        self.latest_reading = (0.0, 0.0, 0.0)
         self.sensor_lock = threading.Lock()
         self.last_valid = (0.0, 0.0)
         self.last_sensor_time = time.time()
@@ -606,7 +651,6 @@ class FlowDashboard:
 
         self.status_label.pack(anchor="w", padx=12, pady=(12, 6))
 
-        # Removed "Data Source" section to save vertical space in settings panel
 
         ctk.CTkLabel(panel, text="Serial Port:", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=12, pady=(12, 2))
         port_frame = ctk.CTkFrame(panel, fg_color="transparent")
@@ -729,9 +773,21 @@ class FlowDashboard:
 
         self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
         
-        self.flow_line, = self.ax.plot([], [], label="Flow (SLPM)")
-        self.total_line, = self.ax.plot([], [], label="Total (NCM)")
-        self.ax.legend()
+        # Primary axis: instantaneous Flow
+        self.flow_line, = self.ax.plot([], [], label="Flow (SLPM)", color="#00d4ff")
+        # Marker for current value (updated each graph tick)
+        self.flow_marker, = self.ax.plot([], [], 'o', color="#ff6b6b", markersize=6, zorder=5)
+
+        # Secondary axis for Total (separate scale so it doesn't rescale flow)
+        self.ax2 = self.ax.twinx()
+        self.total_line, = self.ax2.plot([], [], label="Total (NCM)", color="#00ff88")
+        self.ax2.set_ylabel("Total (NCM)", color="#28a745")
+        self.ax2.tick_params(colors="#28a745")
+
+        # Combined legend from both axes
+        lines = [self.flow_line, self.total_line]
+        labels = [l.get_label() for l in lines]
+        self.ax.legend(lines, labels, loc="upper left")
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_panel)
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
@@ -789,7 +845,6 @@ class FlowDashboard:
                 self.connect_btn.configure(text="Disconnect", fg_color="#dc3545")
                 self.status_label.configure(text=f"● Connected: {port}", text_color="#00ff88")
                 self.error_label.configure(text="")
-                self.mode_var.set("hardware")
             else:
                 self.error_label.configure(text=f"Error: {self.sensor.last_error}")
 
@@ -848,10 +903,17 @@ class FlowDashboard:
                 append_log(flow, total)
             except Exception:
                 pass
-            # Update logs popup table if open
-            if self.logs_win:
+            # Update logs popup table if open and still exists
+            if self.logs_win and getattr(self.logs_win, 'top', None) and self.logs_win.top.winfo_exists() and getattr(self.logs_win, 'tree', None):
                 items = list(zip(self.times, self.flows, self.totals))
-                self.logs_win.update_live_table(items)
+                try:
+                    self.logs_win.update_live_table(items)
+                except Exception:
+                    # If anything goes wrong, clear the reference to avoid repeated errors
+                    try:
+                        self.logs_win = None
+                    except Exception:
+                        pass
 
     def _do_graph_update(self):
         if self.mode != "live":
@@ -859,6 +921,12 @@ class FlowDashboard:
         try:
             if not self.times:
                 return
+            # Ensure secondary axis is visible for live view
+            try:
+                if getattr(self, 'ax2', None):
+                    self.ax2.set_visible(True)
+            except Exception:
+                pass
             window_seconds = self.settings["graph_window_sec"]
             now = datetime.datetime.now()
             cutoff = now - datetime.timedelta(seconds=window_seconds)
@@ -871,18 +939,42 @@ class FlowDashboard:
             if not xs:
                 return
             self.ax.set_facecolor('#ffffff')
+            # Update data lines
             self.flow_line.set_data(xs, ys_flow)
             self.total_line.set_data(xs, ys_total)
+            # Update current value marker to latest point
+            try:
+                self.flow_marker.set_data([xs[-1]], [ys_flow[-1]])
+            except Exception:
+                pass
+
+            # X axis limits
             self.ax.set_xlim(cutoff, now)
-            self.ax.relim()
-            self.ax.autoscale_view()
-            self.canvas.draw_idle()
-            max_val = max(max(ys_flow) if ys_flow else 1, max(ys_total) if ys_total else 1)
-            self.ax.set_ylim(0, max_val * 1.3)
-            self.ax.set_title("Live Flow / Total", color='black', fontsize=12)
+
+            # Center flow axis around the latest flow value for clearer movement
+            current_flow = ys_flow[-1]
+            flow_min = min(ys_flow)
+            flow_max = max(ys_flow)
+            # compute max deviation from current value and add margin
+            max_dev = max(abs(current_flow - flow_min), abs(flow_max - current_flow), 1.0)
+            half_range = max_dev * 1.3
+            y_min = max(0.0, current_flow - half_range)
+            y_max = current_flow + half_range
+            self.ax.set_ylim(y_min, y_max)
+
+            # Scale total axis independently so it doesn't affect the flow's visual center
+            if ys_total:
+                max_tot = max(ys_total)
+                self.ax2.set_ylim(0, max(max_tot * 1.1, 1.0))
+
+            # Styling and redraw
+            self.ax.set_title("Live Flow (centered) / Total", color='black', fontsize=12)
             self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
             self.ax.tick_params(colors='black')
-            self.ax.legend(loc="upper left", facecolor='#ffffff', edgecolor='#cccccc', labelcolor='black')
+            # Keep combined legend
+            lines = [self.flow_line, self.total_line]
+            labels = [l.get_label() for l in lines]
+            self.ax.legend(lines, labels, loc="upper left")
             self.ax.grid(alpha=0.2, color='#e6e6e6')
             for spine in self.ax.spines.values():
                 spine.set_color('#cccccc')
@@ -926,11 +1018,17 @@ class FlowDashboard:
         except Exception:
             pass
 
-        # If logs popup is open, refresh its table with the latest live buffer
+        # If logs popup is open and valid, refresh its table with the latest live buffer
         try:
-            if self.logs_win:
+            if self.logs_win and getattr(self.logs_win, 'top', None) and self.logs_win.top.winfo_exists() and getattr(self.logs_win, 'tree', None):
                 items = list(zip(self.times, self.flows, self.totals))
-                self.logs_win.update_live_table(items)
+                try:
+                    self.logs_win.update_live_table(items)
+                except Exception:
+                    try:
+                        self.logs_win = None
+                    except Exception:
+                        pass
         except Exception:
             pass
     # ==================== LOGS HANDLING (when loaded from logs popup) ====================
@@ -958,12 +1056,21 @@ class FlowDashboard:
                 keys = sorted(hourly.keys())
                 avg = [sum(hourly[k]) / len(hourly[k]) for k in keys]
                 self.ax.clear()
-                self.ax.set_facecolor('#0f1724')
+                # Use same styling as live (white background, black ticks)
+                self.ax.set_facecolor('#ffffff')
                 self.ax.plot(keys, avg, marker="o", linewidth=2, color="#00d4ff")
-                self.ax.set_title(f"{label} — Hourly Average", color='white')
+                self.ax.set_title(f"{label} — Hourly Average", color='black')
                 self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-                self.ax.tick_params(colors='white')
-                self.ax.grid(alpha=0.2, color='#444')
+                self.ax.tick_params(colors='black')
+                self.ax.grid(alpha=0.2, color='#e6e6e6')
+                for spine in self.ax.spines.values():
+                    spine.set_color('#cccccc')
+                # Hide secondary axis (Total) when viewing day/hourly summary
+                try:
+                    if getattr(self, 'ax2', None):
+                        self.ax2.set_visible(False)
+                except Exception:
+                    pass
                 self.fig.autofmt_xdate()
                 self.canvas.draw_idle()
         except Exception as e:
