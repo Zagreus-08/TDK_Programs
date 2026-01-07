@@ -194,10 +194,12 @@ class MF5708Sensor:
             return None
         try:
             self.serial.reset_input_buffer()
+            time.sleep(0.01)
             request = self._build_read_request(start_reg, num_regs)
             if DEBUG_MODE:
                 print(f"[DEBUG] TX (hex): {' '.join(f'{b:02X}' for b in request)}")
             self.serial.write(request)
+            self.serial.flush()
             
             # Wait for response with retry logic
             expected_len = 3 + 2 * num_regs + 2
@@ -853,24 +855,31 @@ class FlowDashboard:
         if not self.sensor.connected:
             return self.last_valid
 
-        result = self.sensor.read_all()
-        if result is None:
-            self.error_label.configure(text=f"Read error: {self.sensor.last_error}")
-            return self.last_valid
+        if not self.latest_reading:
+            return None, None
 
-        with self.sensor_lock:
-            flow, total, _ = self.latest_reading
-        return round(flow, 2), round(total, 3)
+        flow, total, _ = self.latest_reading
+        return round(flow, 3), round(total, 3)
 
 
     def _sensor_worker(self):
+        MIN_POLL = 0.5  # seconds
+
         while self.running:
-            if self.sensor.connected:
-                result = self.sensor.read_all()
-                if result:
-                    with self.sensor_lock:
-                        self.latest_reading = result
-            time.sleep(self.settings["update_interval_ms"] / 1000)
+            if not self.sensor.connected:
+                time.sleep(0.2)
+                continue
+
+            start = time.time()
+            result = self.sensor.read_all()
+
+            if result:
+                self.latest_reading = result
+                self.last_sensor_time = time.time()
+
+            elapsed = time.time() - start
+            sleep_time = max(0.0, MIN_POLL - elapsed)
+            time.sleep(sleep_time)
 
     # ==================== UPDATE LOOPS ====================
     def _schedule_update(self):
