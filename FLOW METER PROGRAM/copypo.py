@@ -284,7 +284,6 @@ class MF5708Sensor:
             return None
 
 
-
 # ============== LOGS WINDOW (popup) ==============
 class LogsWindow:
     """Popup Toplevel for browsing logs and viewing CSV contents."""
@@ -636,24 +635,6 @@ class FlowDashboard:
         panel.grid(row=0, column=0, sticky="nsew", padx=(12, 6), pady=12)
         panel.grid_propagate(False)
 
-        ctk.CTkLabel(panel, text="⚙️ Settings", font=ctk.CTkFont(size=18, weight="bold")
-                    ).pack(anchor="w", padx=12, pady=(12, 8))
-
-        info_frame = ctk.CTkFrame(panel, fg_color="#f8fafc")
-        info_frame.pack(fill="x", padx=12, pady=6)
-        ctk.CTkLabel(info_frame, text=f"Platform: {PLATFORM_NAME}",
-                    font=ctk.CTkFont(size=11)).pack(anchor="w", padx=8, pady=4)
-
-        self.status_label = ctk.CTkLabel(
-            panel,
-            text="● Disconnected",
-            text_color="#ff6b6b",
-            font=ctk.CTkFont(size=12, weight="bold")
-        )
-
-        self.status_label.pack(anchor="w", padx=12, pady=(12, 6))
-
-
         ctk.CTkLabel(panel, text="Serial Port:", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=12, pady=(12, 2))
         port_frame = ctk.CTkFrame(panel, fg_color="transparent")
         port_frame.pack(fill="x", padx=12)
@@ -727,8 +708,8 @@ class FlowDashboard:
                             text_color="#555555").pack(side="left", padx=(4, 0))
             return f
 
-        make_card(card_row, self.var_flow, "Flow Rate", "SLPM").grid(row=0, column=0, padx=6, pady=8, sticky="nsew")
-        make_card(card_row, self.var_total, "Total Flow", "NCM").grid(row=0, column=1, padx=6, pady=8, sticky="nsew")
+        make_card(card_row, self.var_flow, "Flow Rate", "L/min").grid(row=0, column=0, padx=6, pady=8, sticky="nsew")
+        make_card(card_row, self.var_total, "Total Flow", "m3").grid(row=0, column=1, padx=6, pady=8, sticky="nsew")
 
         # Graph Panel
         graph_panel = ctk.CTkFrame(panel, fg_color="#0f1724", corner_radius=6)
@@ -942,7 +923,7 @@ class FlowDashboard:
             xs, ys_flow, ys_total = [], [], []
             for t, f, tt in zip(self.times, self.flows, self.totals):
                 if t >= cutoff:
-                    xs.append(t)
+                    xs.append(t)    
                     ys_flow.append(f)
                     ys_total.append(tt)
             if not xs:
