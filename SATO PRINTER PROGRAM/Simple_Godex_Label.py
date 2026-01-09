@@ -98,12 +98,12 @@ def make_label2_image(sensor_text):
     _, _, font_sensor = load_pillow_fonts(HEIGHT_PX)
 
     # ---------- QR CODE ----------
-    qr_size = 200
+    qr_size = 225
     qr = qrcode.make(sensor_text)
     qr = qr.resize((qr_size, qr_size), RESAMPLE)
 
     qr_x = WIDTH_PX - qr_size - 50
-    qr_y = -15
+    qr_y = -28
     label2.paste(qr, (qr_x, qr_y))
 
     # ---------- FORMAT SENSOR TEXT ----------
@@ -375,7 +375,7 @@ tk.Radiobutton(method_frame, text="Direct USB (Advanced)",
 
 btn_save = tk.Button(root, text="Save Labels")
 btn_save.pack(pady=5)
-btn_print = tk.Button(root, text="Print Labels to Godex RT863i", bg="lightgreen", font=("Arial", 10, "bold"))
+btn_print = tk.Button(root, text="Print Labels", bg="lightgreen", font=("Arial", 10, "bold"))
 btn_print.pack(pady=5)
 
 # Status label
