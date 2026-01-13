@@ -16,6 +16,7 @@ import struct
 import collections
 import datetime
 import platform
+import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import customtkinter as ctk
@@ -115,6 +116,8 @@ class MF5708Sensor:
         self.serial = None
         self.connected = False
         self.last_error = ""
+        self.last_total = None   # track previous total for continuity-based selection
+        self.last_total_time = None  # timestamp of when last_total was set
 
     def connect(self):
         if not SERIAL_AVAILABLE:
@@ -260,6 +263,14 @@ class MF5708Sensor:
         return struct.unpack('>f', raw)[0]
 
     def read_all(self):
+        """
+        Read sensor values and return (flow, total, temp).
+
+        Deterministic primary mapping: try regs[5] (high), regs[6] (low) first
+        (hi<<16 | lo) / 1000. If that looks plausible, use it. Otherwise fall
+        back to scanning adjacent pairs and choose a candidate close to last_total
+        (or smallest plausible for the first reading).
+        """
         if DEBUG_MODE:
             print(f"\n[DEBUG] ========== READ ALL SENSOR VALUES ==========")
         regs = self._read_registers(0x0000, 16)
@@ -267,16 +278,106 @@ class MF5708Sensor:
             return None
         try:
             flow = regs[3] / 1000.0
-            total_32bit = regs[0] * 65536 + regs[1]
-            if total_32bit == 0 or total_32bit == 1:
-                total_32bit = regs[4] * 65536 + regs[5]
-            if total_32bit == 0:
-                total_32bit = regs[6] * 65536 + regs[7]
-            total = total_32bit / 1000.0
-            temp = 0.0
+
+            # Primary deterministic attempt: regs[5] = high word, regs[6] = low word
+            try:
+                primary_32 = (regs[5] << 16) | regs[6]
+                primary_total = primary_32 / 1000.0
+            except Exception:
+                primary_total = None
+
+            # Basic plausibility check
+            def plausible_val(v):
+                return v is not None and v >= 0.0 and v <= 1e6 and not math.isclose(v, 0.0, abs_tol=1e-12)
+
             if DEBUG_MODE:
-                print(f"[DEBUG] Flow: {flow}, Total: {total}")
-            return (flow, total, temp)
+                print(f"[DEBUG] flow raw regs[3]={regs[3]}, flow={flow}")
+                if primary_total is not None:
+                    print(f"[DEBUG] primary candidate (regs[5]/6 BE): {primary_total:.6f}")
+
+            selected = None
+            now = time.time()
+
+            if plausible_val(primary_total):
+                # If we have a last_total, ensure primary is not a huge unexpected jump
+                if self.last_total is None:
+                    selected = primary_total
+                else:
+                    # allow small increases based on time/flow, but be lenient here since primary mapping is likely correct
+                    dt = max(0.1, now - (self.last_total_time or now))
+                    expected_inc = (flow * dt) / 60000.0
+                    allowed_inc = max(0.01, expected_inc * 20.0 + 0.001)  # relatively permissive
+                    if primary_total >= self.last_total - 0.0005 and primary_total <= self.last_total + allowed_inc:
+                        selected = primary_total
+                    else:
+                        # still allow if primary_total is small and near zero (device just started)
+                        if primary_total <= 0.05:
+                            selected = primary_total
+                        else:
+                            # reject as implausible and fall back
+                            if DEBUG_MODE:
+                                print(f"[DEBUG] primary candidate {primary_total:.6f} outside allowed range; fallback to scanning")
+                            selected = None
+            # Fallback scanning of adjacent pairs
+            if selected is None:
+                # Build candidates from adjacent pairs (both byte orders)
+                candidates = []
+                n = len(regs)
+                for i in range(n - 1):
+                    hi = regs[i]
+                    lo = regs[i + 1]
+                    candidates.append(((hi << 16) | lo) / 1000.0)
+                    candidates.append(((lo << 16) | hi) / 1000.0)
+
+                plausible = [v for v in candidates if plausible_val(v)]
+
+                if DEBUG_MODE:
+                    print(f"[DEBUG] total candidates (m3): {['{:.6f}'.format(c) for c in candidates]}")
+                    print(f"[DEBUG] plausible totals: {['{:.6f}'.format(p) for p in plausible]}")
+
+                if plausible:
+                    if self.last_total is not None:
+                        # pick candidate closest to last_total (prefer non-decreasing but allow small increases)
+                        plausible_sorted = sorted(set(plausible))
+                        eps = 0.0005
+                        up_candidates = [p for p in plausible_sorted if p > self.last_total + eps]
+                        if up_candidates:
+                            selected = min(up_candidates)  # choose the smallest upward step
+                        else:
+                            # no upward candidates; choose candidate closest to last_total
+                            selected = min(plausible, key=lambda x: abs(x - self.last_total))
+                    else:
+                        # first reading: choose smallest plausible
+                        selected = min(plausible)
+                else:
+                    # Last-resort heuristic using original common locations
+                    total_32bit = (regs[0] << 16) | regs[1]
+                    if total_32bit in (0, 1):
+                        total_32bit = (regs[4] << 16) | regs[5]
+                    if total_32bit == 0:
+                        total_32bit = (regs[6] << 16) | regs[7]
+                    selected = total_32bit / 1000.0
+                    if DEBUG_MODE:
+                        print(f"[DEBUG] Fallback total_32bit={total_32bit}, total={selected:.6f}")
+
+            # Final sanity: avoid large unrealistic drops
+            if selected is not None:
+                if self.last_total is not None and selected < self.last_total - 0.5:
+                    if DEBUG_MODE:
+                        print(f"[DEBUG] Candidate decreased sharply ({selected:.6f} < {self.last_total:.6f}), keeping last_total.")
+                    total = self.last_total
+                else:
+                    total = selected
+                self.last_total = total
+                self.last_total_time = now
+            else:
+                total = 0.0
+                self.last_total = total
+                self.last_total_time = now
+
+            if DEBUG_MODE:
+                print(f"[DEBUG] Selected Flow: {flow:.3f}, Total: {total:.6f}")
+            return (flow, total, 0.0)
         except Exception as e:
             self.last_error = str(e)
             if DEBUG_MODE:
@@ -291,7 +392,7 @@ class LogsWindow:
     def __init__(self, parent_dashboard):
         self.parent = parent_dashboard
 
-        # ✅ CREATE TOPLEVEL FIRST (CRITICAL)
+        #  CREATE TOPLEVEL FIRST (CRITICAL)
         self.top = tk.Toplevel(self.parent.root)
 
         try:
@@ -306,7 +407,7 @@ class LogsWindow:
                 self.top.geometry("900x600")
                 self.top.minsize(600, 420)
 
-            # ⚠️ transient causes issues on Pi
+            #   transient causes issues on Pi
             if not IS_RASPBERRY_PI:
                 self.top.transient(self.parent.root)
 
@@ -326,7 +427,7 @@ class LogsWindow:
                 self.top.after(300, lambda: self.top.attributes("-topmost", False))
 
         except Exception as e:
-            # ✅ CLEAN FAIL — destroy partial window
+            #  CLEAN FAIL  destroy partial window
             try:
                 self.top.destroy()
             except Exception:
@@ -556,11 +657,7 @@ class FlowDashboard:
         self.root.title(f"MF5708 Flow Meter Dashboard - {PLATFORM_NAME}")
         if IS_RASPBERRY_PI:
             # Fixed to Raspberry Pi official 7" resolution
-            w, h = 800, 480
-            self.root.geometry(f"{w}x{h}")
-            self.root.minsize(w, h)
-            self.root.maxsize(w, h)
-            self.root.resizable(False, False)
+            self.root.attributes("-fullscreen", True)
         else:
             # Windows / testing configuration
             self.root.geometry("1400x900")
@@ -645,7 +742,7 @@ class FlowDashboard:
             self.port_combo.set(self.settings["com_port"])
         self.port_combo.pack(side="left", pady=4)
 
-        ctk.CTkButton(port_frame, text="🔄", width=40, command=self._refresh_ports).pack(side="left", padx=4)
+        ctk.CTkButton(port_frame, text="=", width=40, command=self._refresh_ports).pack(side="left", padx=4)
 
         ctk.CTkLabel(panel, text="Baud Rate:", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=12, pady=(8, 2))
         self.baud_combo = ctk.CTkComboBox(panel, values=["9600", "19200", "38400", "57600", "115200"],
@@ -661,7 +758,7 @@ class FlowDashboard:
         self.connect_btn = ctk.CTkButton(panel, text="Connect", fg_color="#28a745",
                                          command=self._toggle_connection)
         self.connect_btn.pack(fill="x", padx=12, pady=(16, 8))
-
+        
         ctk.CTkLabel(panel, text="Update Interval (ms):", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=12, pady=(16, 2))
         self.interval_slider = ctk.CTkSlider(panel, from_=200, to=5000, number_of_steps=48,
                                              command=self._on_interval_change)
@@ -733,61 +830,100 @@ class FlowDashboard:
         self.ax.set_ylabel("Value")
         self.ax.grid(alpha=0.2, color='#444')# Matplotlib figure (use smaller size on Pi)
         
+# Create a single, prominent flow plot (L/min)
         if IS_RASPBERRY_PI:
-            # slightly smaller figure to better fit 800x480
-            self.fig, self.ax = plt.subplots(figsize=(7, 3))
+            figsize = (7, 3)
+            title_fontsize = 10
         else:
-            self.fig, self.ax = plt.subplots(figsize=(10, 5))
+            figsize = (10, 5)
+            title_fontsize = 12
 
+        self.fig, self.ax = plt.subplots(figsize=figsize)
         self.fig.patch.set_facecolor('#ffffff')
         self.ax.set_facecolor('#ffffff')
-        self.ax.tick_params(colors='black')
+
+        # Appearance for a "real" clear graph
+        self.ax.tick_params(colors='black', labelsize=10)
         self.ax.xaxis.label.set_color('black')
         self.ax.yaxis.label.set_color('black')
-        # reduce title size on small screen
-        title_fontsize = 10 if IS_RASPBERRY_PI else 12
-        self.ax.set_title("Live Flow / Total / Temp", fontsize=title_fontsize, color='black')
-        self.ax.set_ylabel("Value", color='black')
-
-        # light grid and spines
-        self.ax.grid(alpha=0.2, color='#e6e6e6')
+        self.ax.title.set_color('black')
         for spine in self.ax.spines.values():
             spine.set_color('#cccccc')
 
         self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-        
-        # Primary axis: instantaneous Flow
-        self.flow_line, = self.ax.plot([], [], label="Flow (SLPM)", color="#00d4ff")
-        # Marker for current value (updated each graph tick)
-        self.flow_marker, = self.ax.plot([], [], 'o', color="#ff6b6b", markersize=6, zorder=5)
+        self.ax.set_title("Live Flow (L/min)", fontsize=title_fontsize, color='black')
+        self.ax.set_ylabel("Flow (L/min)", color='black')
 
-        # Secondary axis for Total (separate scale so it doesn't rescale flow)
-        self.ax2 = self.ax.twinx()
-        self.total_line, = self.ax2.plot([], [], label="Total (NCM)", color="#00ff88")
-        self.ax2.set_ylabel("Total (NCM)", color="#28a745")
-        self.ax2.tick_params(colors="#28a745")
+        # Thicker, high-visibility flow line + marker + filled area
+        self.flow_line, = self.ax.plot([], [], label="Flow (L/min)",
+                                       color="#007acc", linewidth=2.8, alpha=0.98, zorder=3)
+        self.flow_marker, = self.ax.plot([], [], 'o', color="#ff6b6b", markersize=8, zorder=6)
+        self.flow_fill = None  # will hold fill_between PolyCollection
 
-        # Combined legend from both axes
-        lines = [self.flow_line, self.total_line]
-        labels = [l.get_label() for l in lines]
-        self.ax.legend(lines, labels, loc="upper left")
+        # Stronger but unobtrusive grid
+        self.ax.grid(alpha=0.25, color='#e6e6e6', linestyle='-')
+
+        # Legend
+        self.ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_panel)
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
-
+        # Initialise live plot artists
+        self._setup_live_plot()
         # Control Buttons Row
         ctrl = ctk.CTkFrame(panel, fg_color="#f8fafc", corner_radius=6)
         ctrl.grid(row=2, column=0, sticky="ew", padx=8, pady=(6, 8))
         ctrl.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
 
-        ctk.CTkButton(ctrl, text=" Export PNG", command=self._export_graph).grid(row=0, column=0, padx=6, pady=8)
-        ctk.CTkButton(ctrl, text=" Export CSV", command=self._export_csv).grid(row=0, column=1, padx=6, pady=8)
+        ctk.CTkButton(ctrl, text=" Reboot", fg_color="#f59e0b", command=self._reboot_system).grid(row=0, column=0, padx=6, pady=8)
+        ctk.CTkButton(ctrl, text=" Shutdown", fg_color="#dc3545", command=self._shutdown_system).grid(row=0, column=1, padx=6, pady=8)
         ctk.CTkButton(ctrl, text=" Live View", command=self._switch_to_live).grid(row=0, column=2, padx=6, pady=8)
         ctk.CTkButton(ctrl, text=" Data Logs", command=self._open_logs_window).grid(row=0, column=3, padx=6, pady=8)
         ctk.CTkButton(ctrl, text=" Exit", fg_color="#dc3545", command=self._exit_now).grid(row=0, column=4, padx=6, pady=8)
 
     # ==================== SETTINGS CALLBACKS ====================
+    def _setup_live_plot(self):
+        """(Re)initialise the live plot axes and Line2D/collections used by live updates."""
+        if not getattr(self, "fig", None) or not getattr(self, "ax", None) or not getattr(self, "canvas", None):
+            return
+        title_fontsize = 10 if IS_RASPBERRY_PI else 12
 
+        # Clear axes and set style for live view
+        self.ax.clear()
+        self.fig.patch.set_facecolor('#ffffff')
+        self.ax.set_facecolor('#ffffff')
+        self.ax.tick_params(colors='black', labelsize=10)
+        self.ax.xaxis.label.set_color('black')
+        self.ax.yaxis.label.set_color('black')
+        self.ax.title.set_color('black')
+        for spine in self.ax.spines.values():
+            spine.set_color('#cccccc')
+
+        self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+        self.ax.set_title("Live Flow (L/min)", fontsize=title_fontsize, color='black')
+        self.ax.set_ylabel("Flow (L/min)", color='black')
+
+        # Create the prominent flow line and marker used by _do_graph_update
+        self.flow_line, = self.ax.plot([], [], label="Flow (L/min)",
+                                       color="#007acc", linewidth=2.8, alpha=0.98, zorder=3)
+        self.flow_marker, = self.ax.plot([], [], 'o', color="#ff6b6b", markersize=8, zorder=6)
+        self.flow_fill = None
+
+        # Hide any secondary axis previously used (safe-guard)
+        try:
+            if getattr(self, "ax2", None):
+                self.ax2.set_visible(False)
+        except Exception:
+            pass
+
+        self.ax.grid(alpha=0.25, color='#e6e6e6', linestyle='-')
+        self.ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
+
+        try:
+            self.canvas.draw_idle()
+        except Exception:
+            pass
+        
     def _refresh_ports(self):
         ports = get_available_ports()
         self.port_combo.configure(values=ports if ports else ["No ports found"])
@@ -808,7 +944,7 @@ class FlowDashboard:
         if self.sensor.connected:
             self.sensor.disconnect()
             self.connect_btn.configure(text="Connect", fg_color="#28a745")
-            self.status_label.configure(text="● Disconnected", text_color="#ff6b6b")
+            self.status_label.configure(text="Ï Disconnected", text_color="#ff6b6b")
             self.error_label.configure(text="")
         else:
             port = self.port_combo.get()
@@ -826,22 +962,34 @@ class FlowDashboard:
             self.sensor.slave_addr = addr
             if self.sensor.connect():
                 self.connect_btn.configure(text="Disconnect", fg_color="#dc3545")
-                self.status_label.configure(text=f"● Connected: {port}", text_color="#00ff88")
+                self.status_label.configure(text=f"Ï Connected: {port}", text_color="#00ff88")
                 self.error_label.configure(text="")
             else:
                 self.error_label.configure(text=f"Error: {self.sensor.last_error}")
 
     # ==================== SENSOR READING ====================
     def _read_sensor(self):
+        # If not connected, return last valid cached values
         if not self.sensor.connected:
             return self.last_valid
 
         if not self.latest_reading:
-            return None, None
+            # No new reading yet — return last valid
+            return self.last_valid
 
         flow, total, _ = self.latest_reading
-        return round(flow, 3), round(total, 3)
+        try:
+            f = round(float(flow), 3)
+        except Exception:
+            f = self.last_valid[0]
+        try:
+            t = round(float(total), 3)
+        except Exception:
+            t = self.last_valid[1]
 
+        # update last_valid
+        self.last_valid = (f, t)
+        return f, t
 
     def _sensor_worker(self):
         MIN_POLL = 0.5  # seconds
@@ -854,8 +1002,9 @@ class FlowDashboard:
             start = time.time()
             result = self.sensor.read_all()
 
-            if result:
+            if result is not None:
                 self.latest_reading = result
+
                 self.last_sensor_time = time.time()
 
             elapsed = time.time() - start
@@ -864,15 +1013,11 @@ class FlowDashboard:
 
     # ==================== UPDATE LOOPS ====================
     def _schedule_update(self):
-        if not self.running:
-            return
-        try:
-            append_log(flow, total)
-        except Exception:
-            pass
-        
-        self._do_update()
-        self.update_after_id = self.root.after(self.settings["update_interval_ms"], self._schedule_update)
+            if not self.running:
+                return
+
+            self._do_update()
+            self.update_after_id = self.root.after(self.settings["update_interval_ms"], self._schedule_update)
 
     def _schedule_graph(self):
         if not self.running:
@@ -911,28 +1056,44 @@ class FlowDashboard:
         try:
             if not self.times:
                 return
-            # Ensure secondary axis is visible for live view
-            try:
-                if getattr(self, 'ax2', None):
-                    self.ax2.set_visible(True)
-            except Exception:
-                pass
+
+            # local font size consistent with build
+            title_fontsize = 10 if IS_RASPBERRY_PI else 12
+
             window_seconds = self.settings["graph_window_sec"]
             now = datetime.datetime.now()
             cutoff = now - datetime.timedelta(seconds=window_seconds)
-            xs, ys_flow, ys_total = [], [], []
-            for t, f, tt in zip(self.times, self.flows, self.totals):
+
+            xs, ys_flow = [], []
+            for t, f in zip(self.times, self.flows):
                 if t >= cutoff:
-                    xs.append(t)    
+                    xs.append(t)
                     ys_flow.append(f)
-                    ys_total.append(tt)
+
             if not xs:
                 return
-            self.ax.set_facecolor('#ffffff')
-            # Update data lines
+
+            # Update line data
             self.flow_line.set_data(xs, ys_flow)
-            self.total_line.set_data(xs, ys_total)
-            # Update current value marker to latest point
+
+            # Update fill under curve: remove old and add new
+            try:
+                if self.flow_fill is not None:
+                    # remove previous collection(s)
+                    try:
+                        self.flow_fill.remove()
+                    except Exception:
+                        pass
+                    self.flow_fill = None
+            except Exception:
+                pass
+            try:
+                # create a soft fill under the flow line
+                self.flow_fill = self.ax.fill_between(xs, ys_flow, color="#cfeeff", alpha=0.4, zorder=2)
+            except Exception:
+                self.flow_fill = None
+
+            # Marker for latest value
             try:
                 self.flow_marker.set_data([xs[-1]], [ys_flow[-1]])
             except Exception:
@@ -941,31 +1102,15 @@ class FlowDashboard:
             # X axis limits
             self.ax.set_xlim(cutoff, now)
 
-            # Center flow axis around the latest flow value for clearer movement
-            current_flow = ys_flow[-1]
-            flow_min = min(ys_flow)
-            flow_max = max(ys_flow)
-            # compute max deviation from current value and add margin
-            max_dev = max(abs(current_flow - flow_min), abs(flow_max - current_flow), 1.0)
-            half_range = max_dev * 1.3
-            y_min = max(0.0, current_flow - half_range)
-            y_max = current_flow + half_range
-            self.ax.set_ylim(y_min, y_max)
+            # Y axis scaling with padding (avoid zero-range)
+# Fixed Y axis range: 0 to 20 L/min
+            self.ax.set_ylim(0.0, 20.0)
 
-            # Scale total axis independently so it doesn't affect the flow's visual center
-            if ys_total:
-                max_tot = max(ys_total)
-                self.ax2.set_ylim(0, max(max_tot * 1.1, 1.0))
-
-            # Styling and redraw
-            self.ax.set_title("Live Flow (centered) / Total", color='black', fontsize=12)
-            self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+            # Styling / redraw
+            self.ax.set_title("Live Flow (L/min)", color='black', fontsize=title_fontsize)
             self.ax.tick_params(colors='black')
-            # Keep combined legend
-            lines = [self.flow_line, self.total_line]
-            labels = [l.get_label() for l in lines]
-            self.ax.legend(lines, labels, loc="upper left")
-            self.ax.grid(alpha=0.2, color='#e6e6e6')
+            self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+            self.ax.grid(alpha=0.25, color='#e6e6e6')
             for spine in self.ax.spines.values():
                 spine.set_color('#cccccc')
             self.fig.autofmt_xdate()
@@ -1002,23 +1147,15 @@ class FlowDashboard:
         self.mode = "live"
         self.current_dayfile = None
 
-        # Force an immediate graph refresh
+        # Recreate live plot artists (in case day/month cleared the axes)
         try:
-            self._do_graph_update()
+            self._setup_live_plot()
         except Exception:
             pass
 
-        # If logs popup is open and valid, refresh its table with the latest live buffer
+        # Force an immediate graph refresh
         try:
-            if self.logs_win and getattr(self.logs_win, 'top', None) and self.logs_win.top.winfo_exists() and getattr(self.logs_win, 'tree', None):
-                items = list(zip(self.times, self.flows, self.totals))
-                try:
-                    self.logs_win.update_live_table(items)
-                except Exception:
-                    try:
-                        self.logs_win = None
-                    except Exception:
-                        pass
+            self._do_graph_update()
         except Exception:
             pass
     # ==================== LOGS HANDLING (when loaded from logs popup) ====================
@@ -1049,7 +1186,7 @@ class FlowDashboard:
                 # Use same styling as live (white background, black ticks)
                 self.ax.set_facecolor('#ffffff')
                 self.ax.plot(keys, avg, marker="o", linewidth=2, color="#00d4ff")
-                self.ax.set_title(f"{label} — Hourly Average", color='black')
+                self.ax.set_title(f"{label}  Hourly Average", color='black')
                 self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
                 self.ax.tick_params(colors='black')
                 self.ax.grid(alpha=0.2, color='#e6e6e6')
@@ -1095,6 +1232,63 @@ class FlowDashboard:
             messagebox.showinfo("Saved", f"Data exported to:\n{fn}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
+            
+    def _reboot_system(self):
+        """Ask for confirmation, cleanup, then reboot the system."""
+        if not messagebox.askyesno("Reboot", "Are you sure you want to reboot the system now?"):
+            return
+        # Graceful cleanup of app resources
+        try:
+            self._cleanup()
+        except Exception:
+            pass
+
+        try:
+            if IS_WINDOWS:
+                # Windows: immediate reboot
+                subprocess.Popen(["shutdown", "/r", "/t", "0"], shell=False)
+            else:
+                # Linux / macOS: try systemctl first (preferred), fall back to reboot
+                try:
+                    subprocess.Popen(["sudo", "systemctl", "reboot"], shell=False)
+                except Exception:
+                    subprocess.Popen(["sudo", "reboot"], shell=False)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to reboot:\n{e}")
+        finally:
+            # exit the app process (system command should take over)
+            try:
+                os._exit(0)
+            except Exception:
+                pass
+
+    def _shutdown_system(self):
+        """Ask for confirmation, cleanup, then shut down the system."""
+        if not messagebox.askyesno("Shutdown", "Are you sure you want to shut down the system now?"):
+            return
+        # Graceful cleanup of app resources
+        try:
+            self._cleanup()
+        except Exception:
+            pass
+
+        try:
+            if IS_WINDOWS:
+                # Windows: immediate shutdown
+                subprocess.Popen(["shutdown", "/s", "/t", "0"], shell=False)
+            else:
+                # Linux / macOS: try systemctl first (preferred), fall back to poweroff
+                try:
+                    subprocess.Popen(["sudo", "systemctl", "poweroff"], shell=False)
+                except Exception:
+                    subprocess.Popen(["sudo", "poweroff"], shell=False)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to shut down:\n{e}")
+        finally:
+            try:
+                os._exit(0)
+            except Exception:
+                pass
 
     # ==================== CLEANUP ====================
     def _cleanup(self):
