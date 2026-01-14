@@ -43,6 +43,8 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 DEFAULT_SETTINGS = {
     "com_port": "",
     "baud_rate": 9600,
+    
+    
     "update_interval_ms": 1000,
     "graph_window_sec": 60,
 }
@@ -55,24 +57,31 @@ def get_available_ports():
         return []
     ports = [p.device for p in serial.tools.list_ports.comports()]
     if IS_RASPBERRY_PI:
-        for p in ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyAMA0", "/dev/serial0"]:
+        for p in ["/dev/ttyUSB0"]:
             if p not in ports and os.path.exists(p):
                 ports.append(p)
     return sorted(ports)
 
-def load_monthly_baseline():
+# ---- Baseline persistence: per-month dict with metadata ----
+def load_baselines():
     try:
         if os.path.exists(BASELINE_FILE):
             with open(BASELINE_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                # normalize
+                if not isinstance(data, dict):
+                    return {"monthly": {}, "last_auto": None}
+                monthly = data.get("monthly", {})
+                last_auto = data.get("last_auto", None)
+                return {"monthly": monthly, "last_auto": last_auto}
     except Exception as e:
         print("Baseline load error:", e, file=sys.stderr)
-    return {"baseline": 0.0, "baseline_month": None, "timestamp": None}
+    return {"monthly": {}, "last_auto": None}
 
-def save_monthly_baseline(baseline_val, baseline_month):
+def save_baselines(bdata):
     try:
         with open(BASELINE_FILE, "w") as f:
-            json.dump({"baseline": baseline_val, "baseline_month": baseline_month, "timestamp": datetime.datetime.now().isoformat()}, f)
+            json.dump(bdata, f)
     except Exception as e:
         print("Baseline save error:", e, file=sys.stderr)
 
@@ -448,7 +457,99 @@ class LogsWindow:
             self.parent.flow_line=None; self.parent.flow_marker=None; self.parent.flow_fill=None
         except Exception: pass
         self.parent.canvas_month.draw_idle(); self.parent.mode="month"
+        
+        
+class BaselineDialog:
+    """
+    Simple modal dialog to pick a date/time. Parent must implement
+    _save_manual_baseline(dt: datetime.datetime, value: float)
+    (this dialog will pass value=0.0).
+    """
+    def __init__(self, parent):
+        self.parent = parent
+        self.top = tk.Toplevel(parent.root)
+        self.top.title("Set Baseline (date/time)")
+        self.top.transient(parent.root)
+        self.top.resizable(False, False)
+        # slightly larger size for readability on Pi
+        try:
+            self.top.geometry("420x140+%d+%d" % (parent.root.winfo_rootx()+40, parent.root.winfo_rooty()+40))
+        except Exception:
+            pass
 
+        frm = tk.Frame(self.top, padx=10, pady=8)
+        frm.pack(fill="both", expand=True)
+
+        lbl_font = ("TkDefaultFont", 10)
+        now = datetime.datetime.now()
+
+        # Date
+        tk.Label(frm, text="Date (Y-M-D):", font=lbl_font).grid(row=0, column=0, sticky="w")
+        self.year_sb = tk.Spinbox(frm, from_=2000, to=2100, width=6, font=lbl_font)
+        self.month_sb = tk.Spinbox(frm, from_=1, to=12, width=4, font=lbl_font)
+        self.day_sb = tk.Spinbox(frm, from_=1, to=31, width=4, font=lbl_font)
+        self.year_sb.grid(row=0, column=1, sticky="w", padx=(6,0))
+        self.month_sb.grid(row=0, column=2, sticky="w", padx=(4,0))
+        self.day_sb.grid(row=0, column=3, sticky="w", padx=(4,0))
+        self.year_sb.delete(0,"end"); self.year_sb.insert(0, now.year)
+        self.month_sb.delete(0,"end"); self.month_sb.insert(0, now.month)
+        self.day_sb.delete(0,"end"); self.day_sb.insert(0, now.day)
+
+        # Time
+        tk.Label(frm, text="Time (H:M:S):", font=lbl_font).grid(row=1, column=0, sticky="w", pady=(6,0))
+        self.hour_sb = tk.Spinbox(frm, from_=0, to=23, width=4, font=lbl_font, format="%02.0f")
+        self.min_sb = tk.Spinbox(frm, from_=0, to=59, width=4, font=lbl_font, format="%02.0f")
+        self.sec_sb = tk.Spinbox(frm, from_=0, to=59, width=4, font=lbl_font, format="%02.0f")
+        self.hour_sb.grid(row=1, column=1, sticky="w", padx=(6,0), pady=(6,0))
+        self.min_sb.grid(row=1, column=2, sticky="w", padx=(4,0), pady=(6,0))
+        self.sec_sb.grid(row=1, column=3, sticky="w", padx=(4,0), pady=(6,0))
+        self.hour_sb.delete(0,"end"); self.hour_sb.insert(0, f"{now.hour:02d}")
+        self.min_sb.delete(0,"end"); self.min_sb.insert(0, f"{now.minute:02d}")
+        self.sec_sb.delete(0,"end"); self.sec_sb.insert(0, f"{now.second:02d}")
+
+        # Buttons — Save (prominent), Cancel
+        btn_fr = tk.Frame(frm)
+        btn_fr.grid(row=2, column=0, columnspan=4, pady=(10,0), sticky="e")
+
+        save_btn = tk.Button(btn_fr, text="Save baseline (value=0.000 m³)", width=26, height=1, font=lbl_font,
+                             bg="#007acc", fg="white", command=self._on_save)
+        save_btn.pack(side="left", padx=(0,8))
+
+        cancel_btn = tk.Button(btn_fr, text="Cancel", width=10, height=1, font=lbl_font, command=self._on_cancel)
+        cancel_btn.pack(side="left")
+
+        # make modal
+        self.top.grab_set()
+        self.top.wait_visibility()
+        self.top.focus_force()
+
+    def _on_save(self):
+        # build dt (user-chosen)
+        try:
+            y = int(self.year_sb.get()); m = int(self.month_sb.get()); d = int(self.day_sb.get())
+            hh = int(self.hour_sb.get()); mm = int(self.min_sb.get()); ss = int(self.sec_sb.get())
+            dt = datetime.datetime(y,m,d,hh,mm,ss)
+        except Exception as e:
+            messagebox.showerror("Invalid date/time", f"Please enter valid date/time.\n{e}")
+            return
+
+        # prefer to save the current sensor total as the baseline for the chosen date/time
+        try:
+            _, current_total = self.parent._read_sensor()
+            baseline_value = float(current_total) if current_total is not None else 0.0
+        except Exception:
+            baseline_value = 0.0
+        if hasattr(self.parent, "_save_manual_baseline"):
+            self.parent._save_manual_baseline(dt, baseline_value)
+        else:
+            messagebox.showerror("Save error", "Save handler not available.")
+
+    def _on_cancel(self):
+        try:
+            self.top.destroy()
+        except Exception:
+            pass
+        
 # Main dashboard
 class FlowDashboard:
     def __init__(self, root):
@@ -479,12 +580,18 @@ class FlowDashboard:
         self.latest_reading=(0.0,0.0,0.0); self.last_valid=(0.0,0.0)
         self.times = collections.deque(maxlen=MAX_BUFFER_POINTS); self.flows = collections.deque(maxlen=MAX_BUFFER_POINTS); self.totals = collections.deque(maxlen=MAX_BUFFER_POINTS)
 
-        # baseline
-        bl = load_monthly_baseline()
-        self.monthly_baseline = float(bl.get("baseline",0.0))
-        self.monthly_baseline_month = bl.get("baseline_month", None)
-        ts = bl.get("timestamp"); self.baseline_ts = datetime.datetime.fromisoformat(ts) if ts else None
+        # baseline storage (per-month)
+        bl = load_baselines()
+        self.baselines_by_month = bl.get("monthly", {})  # dict: "YYYY-MM" -> {"value":..., "type":"manual"/"auto", "ts":...}
+        self.last_auto_baseline_ts = bl.get("last_auto", None)
+        
+        # remember the month we started in so we detect month changes
+        self.current_month_key = datetime.datetime.now().strftime("%Y-%m")
+
         self.daily_baseline = 0.0; self.daily_baseline_date = None
+
+        # keep previous total for reset detection
+        self.prev_total = None
 
         # UI
         self._build_ui()
@@ -497,7 +604,7 @@ class FlowDashboard:
     def _auto_detect_port(self):
         ports = get_available_ports()
         if IS_RASPBERRY_PI:
-            for p in ["/dev/ttyUSB0","/dev/ttyUSB1","/dev/ttyAMA0","/dev/serial0"]:
+            for p in ["/dev/ttyUSB0"]:
                 if p in ports: return p
         return ports[0] if ports else ""
 
@@ -574,92 +681,142 @@ class FlowDashboard:
         self.canvas_live = FigureCanvasTkAgg(self.fig_live, master=live_frame)
         self.canvas_live.get_tk_widget().grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
-        # Bottom control bar (spans both columns) — single line
+        # Bottom control bar (compact)
         bottom = ctk.CTkFrame(self.root, fg_color="#f0f4f8", corner_radius=6)
         bottom.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(6,8))
-        # Give middle column more weight so it can expand on small screens
         bottom.grid_columnconfigure(0, weight=1)
-        bottom.grid_columnconfigure(1, weight=2)
+        bottom.grid_columnconfigure(1, weight=1)
         bottom.grid_columnconfigure(2, weight=1)
 
-        # Left: Connect + status
+        # Left: Connect / Disconnect only (compact)
         left_controls = tk.Frame(bottom)
-        left_controls.grid(row=0, column=0, sticky="w", padx=8, pady=bottom_pad)
+        left_controls.grid(row=0, column=0, sticky="w", padx=6, pady=bottom_pad)
         self.connect_btn = ctk.CTkButton(left_controls, text="Connect", width=small_btn_w, height=btn_h, command=self._toggle_connection)
         self.connect_btn.pack(side="left")
-        self.status_label = ctk.CTkLabel(left_controls, text="Disconnected", text_color="#b33434", font=ctk.CTkFont(size=9))
-        self.status_label.pack(side="left", padx=(6,0))
 
-        # Middle: Baseline + actions (single row) — use grid so we can control expansion
+        # Middle: baseline label + Set baseline (opens dialog)
         mid_controls = tk.Frame(bottom)
         mid_controls.grid(row=0, column=1, sticky="nsew", padx=4, pady=bottom_pad)
-        # reserve columns: 0..2 fixed (baseline label, combo, set), col 3 expands for actions
-        mid_controls.grid_columnconfigure(0, weight=0)
-        mid_controls.grid_columnconfigure(1, weight=0)
-        mid_controls.grid_columnconfigure(2, weight=0)
-        mid_controls.grid_columnconfigure(3, weight=1)  # actions area gets extra space
-
-        # Baseline label + combo + Set
-        self.baseline_label = ctk.CTkLabel(mid_controls, text=f"{self.monthly_baseline:.3f} m³", font=ctk.CTkFont(size=baseline_font))
-        self.baseline_label.grid(row=0, column=0, sticky="w", padx=(0,6))
-
-        combo_w = 56 if IS_RASPBERRY_PI else 80
-        months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-        self.month_combo = ctk.CTkComboBox(mid_controls, values=months, width=combo_w, height=20)
-        self.month_combo.set(months[(datetime.datetime.now().month - 1) % 12])
-        self.month_combo.grid(row=0, column=1, sticky="w", padx=(0,6))
-
-        ctk.CTkButton(mid_controls, text="Set", width=tiny_btn_w, height=22, command=self._set_baseline_for_selected_month).grid(row=0, column=2, sticky="w", padx=2)
-
-        # Actions area (expands). Use a subframe and grid the buttons in one row.
-        actions_frame = tk.Frame(mid_controls)
-        actions_frame.grid(row=0, column=3, sticky="w")
-        # tighter padding so buttons fit
-        btn_pad_x = 4 if not IS_RASPBERRY_PI else 2
-
-        b1 = ctk.CTkButton(actions_frame, text="Set Baseline Now", width=small_btn_w, height=btn_h, command=self._set_monthly_baseline_now)
-        b1.grid(row=0, column=0, padx=(0,btn_pad_x))
-        b2 = ctk.CTkButton(actions_frame, text="Clear", width=tiny_btn_w, height=btn_h, fg_color="#f59e0b", command=self._clear_manual_baseline)
-        b2.grid(row=0, column=1, padx=(0,btn_pad_x))
-        b3 = ctk.CTkButton(actions_frame, text="Export CSV", width=small_btn_w, height=btn_h, command=self._export_csv)
-        b3.grid(row=0, column=2, padx=(0,btn_pad_x))
-        b4 = ctk.CTkButton(actions_frame, text="Data Logs", width=small_btn_w, height=btn_h, command=self._open_logs_window)
-        b4.grid(row=0, column=3, padx=(0,btn_pad_x))
-        b5 = ctk.CTkButton(actions_frame, text="Exit", width=small_btn_w, height=btn_h, fg_color="#dc3545", command=self._exit_now)
-        b5.grid(row=0, column=4, padx=(0,btn_pad_x))
-        # Right: reboot / shutdown (compact)
+        mid_controls.grid_columnconfigure(0, weight=1)
+        self.baseline_label = ctk.CTkLabel(mid_controls, text="", font=ctk.CTkFont(size=baseline_font))
+        self.baseline_label.grid(row=0, column=0, sticky="w")
+        self.set_baseline_btn = ctk.CTkButton(mid_controls, text="Set Baseline", width=small_btn_w, height=btn_h, command=self._open_baseline_dialog)
+        self.set_baseline_btn.grid(row=0, column=1, sticky="e", padx=(8,0))
+        # Right: actions compact
         right_controls = tk.Frame(bottom)
-        right_controls.grid(row=0, column=2, sticky="e", padx=8, pady=bottom_pad)
+        right_controls.grid(row=0, column=2, sticky="e", padx=6, pady=bottom_pad)
+        ctk.CTkButton(right_controls, text="Export", width=70, height=btn_h, command=self._export_csv).pack(side="left", padx=(0,6))
+        ctk.CTkButton(right_controls, text="Logs", width=70, height=btn_h, command=self._open_logs_window).pack(side="left", padx=(0,6))
+        ctk.CTkButton(right_controls, text="Exit", width=70, height=btn_h, fg_color="#dc3545", command=self._exit_now).pack(side="left", padx=(0,6))
 
-        # Define actions (reboot/shutdown) - keep same behavior as before
-        def do_reboot():
-            if messagebox.askyesno("Confirm Reboot", "Reboot the system now?"):
-                try:
-                    if IS_WINDOWS:
-                        subprocess.Popen(["shutdown", "/r", "/t", "5"])
-                    else:
-                        subprocess.Popen(["sudo", "reboot"])
-                except Exception as e:
-                    messagebox.showerror("Error", f"Failed to reboot:\n{e}")
-
-        def do_shutdown():
-            if messagebox.askyesno("Confirm Shutdown", "Shutdown the system now?"):
-                try:
-                    if IS_WINDOWS:
-                        subprocess.Popen(["shutdown", "/s", "/t", "5"])
-                    else:
-                        subprocess.Popen(["sudo", "shutdown", "-h", "now"])
-                except Exception as e:
-                    messagebox.showerror("Error", f"Failed to shutdown:\n{e}")
-
-        ctk.CTkButton(right_controls, text="Reboot", fg_color="#f59e0b", width=tiny_btn_w, height=btn_h, command=do_reboot).pack(side="left", padx=(0,6))
-        ctk.CTkButton(right_controls, text="Shutdown", fg_color="#dc3545", width=tiny_btn_w, height=btn_h, command=do_shutdown).pack(side="left")
-        
+        # final Plot setup and baseline label refresh
         self._setup_live_plot()
         self._refresh_month_plot()
+        self._refresh_baseline_label()
 
-    # UI callbacks & remaining logic unchanged from previous version...
+    def _open_baseline_dialog(self):
+        # disable to avoid re-entrance (modal dialog already prevents clicks, but this is safe)
+        try:
+            self.set_baseline_btn.configure(state="disabled")
+        except Exception:
+            pass
+        try:
+            BaselineDialog(self)
+        finally:
+            try:
+                self.set_baseline_btn.configure(state="normal")
+            except Exception:
+                pass
+            
+    # ---- baseline helpers ----
+    def _get_baseline_for_month(self, ym_key):
+        """Return dict entry for baseline (value,type,ts) or None.
+           If not explicitly stored, try to infer from logs for that month (min daily max)."""
+        entry = self.baselines_by_month.get(ym_key)
+        if entry:
+            return entry
+        # attempt to infer from logs
+        folder = os.path.join(LOGS_DIR, ym_key)
+        if not os.path.isdir(folder):
+            return None
+        files = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".csv")])
+        totals = []
+        for fpath in files:
+            try:
+                with open(fpath, "r") as fh:
+                    rdr = csv.reader(fh); next(rdr, None)
+                    day_tots = [float(r[2]) for r in rdr if r and len(r) >= 3]
+                if day_tots:
+                    totals.append(max(day_tots))
+            except Exception:
+                continue
+        if totals:
+            val = float(min(totals))
+            return {"value": val, "type": "inferred", "ts": None}
+        return None
 
+    def _refresh_baseline_label(self):
+        now = datetime.datetime.now()
+        key = now.strftime("%Y-%m")
+        entry = self._get_baseline_for_month(key)
+        if entry:
+            kind = entry.get("type", "auto")
+            val = entry.get("value", 0.0)
+            ts = entry.get("ts")
+            label = f"{val:.3f} m³ ({key}, {kind})"
+        else:
+            label = f"No baseline for {key}"
+        try:
+            self.baseline_label.configure(text=label)
+        except Exception:
+            pass
+        
+    def _save_manual_baseline(self, dt, value):
+        """Save a manual baseline for the month corresponding to dt (dt is a datetime)."""
+        try:
+            key = dt.strftime("%Y-%m")
+            new_val = float(value)
+            old = self.baselines_by_month.get(key)
+            # if existing manual baseline and difference is negligible, ignore to avoid tiny oscillations
+            eps = 0.0005
+            if old and old.get("type") == "manual":
+                try:
+                    old_val = float(old.get("value", 0.0))
+                    if abs(old_val - new_val) <= eps:
+                        # no meaningful change
+                        messagebox.showinfo("Baseline", f"Baseline for {key} unchanged ({new_val:.3f} m³).")
+                        return
+                except Exception:
+                    pass
+            entry = {"value": new_val, "type": "manual", "ts": dt.isoformat()}
+            self.baselines_by_month[key] = entry
+            save_baselines({"monthly": self.baselines_by_month, "last_auto": self.last_auto_baseline_ts})
+            self._refresh_baseline_label()
+            messagebox.showinfo("Baseline saved", f"Saved baseline {new_val:.3f} m³ for {key} at {dt.isoformat()}")
+        except Exception as e:
+            messagebox.showerror("Save error", f"Failed to save baseline:\n{e}")
+
+    # ---- small UI helper to flash a status message for a short time ----
+    def _flash_status(self, text, color="#d97706", timeout_ms=3000):
+        try:
+            prev = self.status_label.cget("text")
+            prev_color = self.status_label.cget("text_color")
+            self.status_label.configure(text=text, text_color=color)
+            def _restore():
+                try:
+                    # restore to connected/disconnected state
+                    if self.sensor.connected:
+                        port = self.sensor.port or self.settings.get("com_port","")
+                        self.status_label.configure(text=f"Connected: {port}", text_color="#148f4a")
+                    else:
+                        self.status_label.configure(text="Disconnected", text_color="#b33434")
+                except Exception:
+                    pass
+            self.root.after(timeout_ms, _restore)
+        except Exception:
+            pass
+
+    # UI callbacks & remaining logic unchanged mostly, but with baseline & reset handling
     def _refresh_ports(self):
         return get_available_ports()
 
@@ -667,7 +824,6 @@ class FlowDashboard:
         if self.sensor.connected:
             self.sensor.disconnect()
             self.connect_btn.configure(text="Connect")
-            self.status_label.configure(text="Disconnected", text_color="#b33434")
         else:
             port = self.settings.get("com_port") or self._auto_detect_port()
             if not port:
@@ -678,52 +834,12 @@ class FlowDashboard:
             self.sensor.slave_addr = 1
             if self.sensor.connect():
                 self.connect_btn.configure(text="Disconnect")
-                self.status_label.configure(text=f"Connected: {port}", text_color="#148f4a")
             else:
                 messagebox.showerror("Error", f"Connection failed:\n{self.sensor.last_error}")
 
-    def _set_baseline_for_selected_month(self):
-        sel = self.month_combo.get()
-        if not sel:
-            messagebox.showinfo("Info", "Please select a month.")
-            return
-        flow, total = self._read_sensor()
-        if total is None:
-            messagebox.showinfo("Info", "No total available to set baseline.")
-            return
-        months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-        try:
-            mnum = months.index(sel) + 1
-        except ValueError:
-            mnum = datetime.datetime.now().month
-        self.monthly_baseline = total
-        self.monthly_baseline_month = mnum
-        save_monthly_baseline(self.monthly_baseline, self.monthly_baseline_month)
-        self.baseline_label.configure(text=f"{self.monthly_baseline:.3f} m³ ({sel})")
-        messagebox.showinfo("Baseline", f"Monthly baseline set to {self.monthly_baseline:.3f} m³ for {sel}")
-
-    def _clear_manual_baseline(self):
-        self.monthly_baseline_month = None
-        save_monthly_baseline(self.monthly_baseline, None)
-        self.baseline_label.configure(text=f"{self.monthly_baseline:.3f} m³ (auto)")
-        messagebox.showinfo("Baseline", "Manual baseline cleared; auto monthly resets will apply.")
-
     def _set_monthly_baseline_now(self):
-        flow, total = self._read_sensor()
-        if total is None:
-            messagebox.showinfo("Info", "No total available to set baseline.")
-            return
-        try:
-            self.monthly_baseline = float(total)
-            self.monthly_baseline_month = datetime.datetime.now().month
-            self.baseline_ts = datetime.datetime.now()
-            save_monthly_baseline(self.monthly_baseline, self.monthly_baseline_month)
-            months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-            mname = months[self.monthly_baseline_month - 1] if 1 <= self.monthly_baseline_month <= 12 else ""
-            self.baseline_label.configure(text=f"{self.monthly_baseline:.3f} m³ ({mname})")
-            messagebox.showinfo("Baseline", f"Monthly baseline set to {self.monthly_baseline:.3f} m³ for {mname}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to set baseline:\n{e}")
+        # open dialog (BaselineDialog will call _save_manual_baseline on Save)
+        BaselineDialog(self)
 
     def _sensor_worker(self):
         MIN_POLL = 0.5
@@ -764,7 +880,7 @@ class FlowDashboard:
         now = datetime.datetime.now()
         self.times.append(now); self.flows.append(flow); self.totals.append(total)
 
-        # daily baseline reset at midnight
+        # daily baseline reset at midnight (or first reading after midnight)
         try:
             today = now.date()
             if self.daily_baseline_date != today:
@@ -773,15 +889,48 @@ class FlowDashboard:
         except Exception:
             pass
 
-        # monthly auto reset at 1st if no manual baseline month set
+        # detect meter reset / rollover (sudden drop compared to previous reading)
         try:
-            if self.monthly_baseline_month is None:
-                if now.day == 1:
-                    bl_month = self.baseline_ts.month if getattr(self,'baseline_ts',None) else None
-                    if bl_month != now.month:
-                        self.monthly_baseline = total
-                        self.baseline_ts = datetime.datetime.now()
-                        save_monthly_baseline(self.monthly_baseline, None)
+            prev = self.prev_total
+            if prev is not None and total < (prev - 0.5) and prev > 1.0:
+                # meter likely reset — adjust baselines automatically
+                if DEBUG_MODE:
+                    print(f"[DEBUG] Meter reset detected: prev={prev}, now={total}", file=sys.stderr)
+                # inform user once (modal) — avoids additional UI elements
+                try:
+                    messagebox.showinfo("Meter reset", "Meter total decreased: possible meter reset. Baselines adjusted.")
+                except Exception:
+                    pass
+                # set today's baseline to current total
+                self.daily_baseline = total
+                self.daily_baseline_date = now.date()
+                # ensure month baseline exists (auto) so month usage doesn't look weird
+                key = now.strftime("%Y-%m")
+                if key not in self.baselines_by_month:
+                    entry = {"value": float(total), "type": "auto", "ts": datetime.datetime.now().isoformat()}
+                    self.baselines_by_month[key] = entry
+                    self.last_auto_baseline_ts = datetime.datetime.now().isoformat()
+                    save_baselines({"monthly": self.baselines_by_month, "last_auto": self.last_auto_baseline_ts})
+                    self._refresh_baseline_label()
+            self.prev_total = total
+        except Exception:
+            pass
+
+        # auto baseline on month change: set baseline = current total when month advances
+        try:
+            curr_key = now.strftime("%Y-%m")
+            if getattr(self, "current_month_key", None) != curr_key:
+                # month changed while app was running (or first read after start in a new month)
+                # create or update an auto baseline for the new month unless a manual baseline exists
+                existing = self.baselines_by_month.get(curr_key)
+                if not existing or existing.get("type") != "manual":
+                    entry = {"value": float(total), "type": "auto", "ts": datetime.datetime.now().isoformat()}
+                    self.baselines_by_month[curr_key] = entry
+                    self.last_auto_baseline_ts = datetime.datetime.now().isoformat()
+                    save_baselines({"monthly": self.baselines_by_month, "last_auto": self.last_auto_baseline_ts})
+                    self._refresh_baseline_label()
+                # update current month tracker
+                self.current_month_key = curr_key
         except Exception:
             pass
 
@@ -789,16 +938,22 @@ class FlowDashboard:
         if self.mode == "live":
             self.var_flow.set(f"{flow:.2f} L/min")
             self.var_day.set(f"{max(0.0, total - self.daily_baseline):.3f} m³")
-            month_usage = max(0.0, total - self.monthly_baseline)
-            self.var_month.set(f"{month_usage:.3f} m³")
-            baseline_text = f"{self.monthly_baseline:.3f} m³"
-            if self.monthly_baseline_month:
-                months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-                try: mname = months[self.monthly_baseline_month-1]; baseline_text += f" ({mname})"
-                except Exception: pass
-            else:
-                baseline_text += " (auto)"
-            self.baseline_label.configure(text=baseline_text)
+
+            # month usage: use stored baseline if present, else try to infer; if none show raw total (raw)
+            try:
+                key = now.strftime("%Y-%m")
+                entry = self._get_baseline_for_month(key)
+                if entry:
+                    baseline_val = float(entry.get("value", 0.0))
+                    month_usage = max(0.0, total - baseline_val)
+                    self.var_month.set(f"{month_usage:.3f} m³")
+                else:
+                    # no baseline yet — show raw total with note
+                    self.var_month.set(f"{total:.3f} m³ (raw)")
+            except Exception:
+                self.var_month.set("0.000 m³")
+
+            self._refresh_baseline_label()
 
             try:
                 append_log(flow, total)
@@ -855,45 +1010,87 @@ class FlowDashboard:
             print("Graph update error:", e, file=sys.stderr)
 
     def _refresh_month_plot(self):
+        """
+        Build a Jan..Dec horizontal bar chart for the current year.
+        For each month:
+          - read daily csvs from logs/YYYY-MM
+          - find month_max = max of daily maxima
+          - baseline: prefer stored baseline for YYYY-MM (baselines_by_month),
+            otherwise infer baseline_first = min(daily maxima) and usage = max(0, month_max - baseline_first)
+          - if no data -> usage 0 (shows '-' label)
+        """
         try:
-            now = datetime.datetime.now(); folder = os.path.join(LOGS_DIR, now.strftime("%Y-%m"))
-            if not os.path.isdir(folder):
-                self.ax_month.clear(); self.ax_month.set_title("No month data"); self.canvas_month.draw_idle(); return
-            files = sorted([os.path.join(folder,f) for f in os.listdir(folder) if f.endswith(".csv")])
-            days, totals = [], []
-            for fpath in files:
-                try:
-                    with open(fpath,"r") as fh:
-                        rdr = csv.reader(fh); next(rdr,None)
-                        day_tots = []
-                        for r in rdr:
-                            if not r: continue
-                            day_tots.append(float(r[2]))
-                        if day_tots:
-                            day = datetime.datetime.strptime(os.path.basename(fpath).replace(".csv",""), "%Y-%m-%d")
-                            days.append(day); totals.append(max(day_tots))
-                except Exception:
+            now = datetime.datetime.now()
+            year = now.year
+            months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+            usages = []
+            display_texts = []
+            for m in range(1,13):
+                ym = f"{year}-{m:02d}"
+                folder = os.path.join(LOGS_DIR, ym)
+                month_files = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".csv")]) if os.path.isdir(folder) else []
+                day_maxes = []
+                for fpath in month_files:
+                    try:
+                        with open(fpath, "r") as fh:
+                            rdr = csv.reader(fh); next(rdr, None)
+                            tots = [float(r[2]) for r in rdr if r and len(r) >= 3]
+                            if tots:
+                                day_maxes.append(max(tots))
+                    except Exception:
+                        continue
+                if not day_maxes:
+                    usages.append(0.0)
+                    display_texts.append("-")
                     continue
-            self.ax_month.clear()
-            if days:
-                baseline_first = min(totals)
-                daily_usage = [max(0.0, t - baseline_first) for t in totals]
-                cumulative = []
-                s = 0.0
-                for u in daily_usage:
-                    s += u
-                    cumulative.append(s)
 
-                self.ax_month.bar(days, daily_usage, color="#00a86b", alpha=0.9, label="Daily Usage (m³)")
-                self.ax_month.plot(days, cumulative, color="#007acc", marker="o", linewidth=1.4, label="Cumulative (m³)")
-                self.ax_month.set_title("Monthly Usage (m³)")
-                self.ax_month.legend(facecolor='#ffffff', edgecolor='#cccccc', fontsize=8)
-                self.ax_month.xaxis.set_major_formatter(mdates.DateFormatter("%d"))
-            else:
-                self.ax_month.set_title("No month data")
+                month_max = max(day_maxes)
+                # baseline: prefer explicit baseline entry for this year-month
+                baseline_entry = self.baselines_by_month.get(ym)
+                if baseline_entry:
+                    baseline_val = float(baseline_entry.get("value", 0.0))
+                else:
+                    # infer baseline as the minimum daily maximum in that month (first/lowest reading)
+                    baseline_val = float(min(day_maxes))
+                usage = max(0.0, month_max - baseline_val)
+                usages.append(usage)
+                display_texts.append(f"{usage:.3f} m³")
+
+            # plot horizontal bars
+            self.ax_month.clear()
+            self.ax_month.set_facecolor('#ffffff')
+            y_pos = list(range(len(months)))[::-1]  # reverse so Jan on top? adjust as you prefer
+            # we want Jan at top -> reverse months and usages to have Jan at top (matplotlib barh draws at y positions)
+            months_rev = months[::-1]
+            usages_rev = usages[::-1]
+            texts_rev = display_texts[::-1]
+
+            bar_cols = ["#00a86b" if u > 0 else "#e6e6e6" for u in usages_rev]
+            bars = self.ax_month.barh(range(12), usages_rev, color=bar_cols, alpha=0.95)
+            self.ax_month.set_yticks(range(12))
+            self.ax_month.set_yticklabels(months_rev)
+            self.ax_month.set_xlabel("Monthly usage (m³)")
+            self.ax_month.set_title(f"Yearly Monthly Usage ({year})")
+            self.ax_month.grid(axis='x', alpha=0.2)
+
+            # annotate values inside bars (if wide enough) or to the right
+            for i, (bar, txt) in enumerate(zip(bars, texts_rev)):
+                w = bar.get_width()
+                if w > 0.02 * max(1.0, max(usages_rev)):  # place inside if bar sufficiently wide
+                    self.ax_month.text(w * 0.5, bar.get_y() + bar.get_height()/2, txt,
+                                       va='center', ha='center', color='white', fontsize=9, weight='bold')
+                else:
+                    # small/zero bar -> place text to the right
+                    self.ax_month.text(w + 0.01, bar.get_y() + bar.get_height()/2, txt,
+                                       va='center', ha='left', color='black', fontsize=9)
+
+            # tighten layout and redraw
+            for spine in self.ax_month.spines.values(): spine.set_color('#cccccc')
+            self.fig_month.tight_layout()
             self.canvas_month.draw_idle()
         except Exception as e:
             print("Month plot refresh error:", e, file=sys.stderr)
+  
 
     def _open_logs_window(self):
         if self.logs_win and hasattr(self.logs_win,"top") and self.logs_win.top.winfo_exists():
