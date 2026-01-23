@@ -68,7 +68,6 @@ def load_pillow_fonts(height_px):
     except Exception: 
         font_confidential = font_bms = font_sensor = ImageFont.load_default()
     return font_confidential, font_bms, font_sensor
-    return font_confidential, font_bms, font_sensor
 
 # Generate Label 1: CONFIDENTIAL + TDK Logo + BMS-SENSOR-05
 def make_label1_image():
@@ -644,7 +643,9 @@ def print_label():
             root.update()
             send_to_printer_windows(canvas.label1_full, printer_name)
             
-            root.after(500)
+            root.update()
+            root.after(500, lambda: None)
+            root.update()
             
             status_label.config(text="Printing Label 2 via Windows...", fg="blue")
             root.update()
