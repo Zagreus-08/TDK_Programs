@@ -613,7 +613,7 @@ def send_absentee_email(absentees):
             tmp = _attach_inline_image(mail, wrist_img, 'esd_wrist')
             if tmp:
                 tmp_files.append(tmp)
-                chart_html += '<p><b>ESD Wrist Monitoring (last 31 days):</b></p>\n<img src="cid:esd_wrist" style="max-width:100%;height:auto;" />'
+                chart_html += '<p><b>ESD Wrist Strap Monitoring (last 31 days):</b></p>\n<img src="cid:esd_wrist" style="max-width:100%;height:auto;" />'
         if shoe_img:
             tmp2 = _attach_inline_image(mail, shoe_img, 'esd_shoe')
             if tmp2:

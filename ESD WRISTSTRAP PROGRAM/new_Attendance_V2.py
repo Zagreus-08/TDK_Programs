@@ -17,7 +17,7 @@ import traceback
 DB_PATH = r"\\phlsvr08\BMS Data\BMS_Database\ESD_Checker\ESDChecker.db"
 EMPLOYEES_JSON_PATH = r"\\phlsvr08\BMS Data\BMS_Database\ESD_Checker\employees.json"
 
-EMAIL_RECIPIENTS_JSON = r"C:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\ESD WRISTSTRAP PROGRAM\email_recipients.json"
+EMAIL_RECIPIENTS_JSON = r"\\phlsvr08\BMS Data\BMS_Database\ESD_Checker\email_recipients.json"
 
 # Debug: when True, saves generated PNG to this path for manual inspection
 DEBUG_SAVE_PNG = False
@@ -261,22 +261,10 @@ def _create_esd_plot_images(dates, wrist_by_emp, shoe_by_emp):
                 colors3 = plt.cm.tab20c(np.linspace(0, 1, 20))
                 colors = np.vstack([colors1, colors2, colors3])
             
-            # Assign colors to employees (normalize to RGBA tuples, robust to bad values)
-            import matplotlib.colors as mcolors
+            # Assign colors to employees
             employee_colors = {}
             for idx, name in enumerate(sorted(data_by_emp.keys())):
-                raw_col = colors[idx % len(colors)]
-                try:
-                    # If raw_col is a string name, try to convert; otherwise convert numeric arrays to tuple
-                    if isinstance(raw_col, str):
-                        employee_colors[name] = mcolors.to_rgba(raw_col)
-                    else:
-                        arr = np.array(raw_col, dtype=float)
-                        employee_colors[name] = tuple(arr.tolist())
-                except Exception:
-                    # Fallback: use tab20 with index if any conversion fails
-                    fallback = plt.cm.tab20(idx % 20)
-                    employee_colors[name] = tuple(np.array(fallback, dtype=float).tolist())
+                employee_colors[name] = colors[idx % len(colors)]
             
             # Create x-positions for ALL calendar dates (no gaps between weeks)
             x_positions = []
