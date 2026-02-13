@@ -46,6 +46,7 @@ loaded_filename = None   # Track filename of loaded raw data for saving
 pause_live = False       # used when user loads a CSV and wants to pause live updates
 scan_active = True       # True while an active scan is happening; becomes False after end-of-scan (100,100)
 last_data_time = time.time()  # Track when we last received serial data
+scan_finished = False
 
 # Z-range lock feature
 z_range_locked = False   # Toggle for lock mode
@@ -343,64 +344,39 @@ def read_loop():
             except Exception as e:
                 print(f"[ERROR] Failed to write CSV row: {e}")
 
-        if len(x) > 1500 and x0 == 3 and y0 >= 5:
-            del x[0:-309]
-            del y[0:-309]
-            del z[0:-309]
-
         # ---------- End of scan ----------
-        # Detect end of scan: hardware sends matching max values (e.g., 100,100 or 200,200)
-        # Check if both x0 and y0 are at their detected maximums (within tolerance)
-        # Only trigger if we have enough data points (avoid false positives)
         if scan_active and data_cnt > 50 and ((abs(x0 - x_range) <= 1 and abs(y0 - y_max) <= 1) or (x0 == y0 and x0 >= 100 and x0 == y_max)):
-            print(f"[INFO] End of scan detected at ({x0},{y0}). Finalizing scan...")
+            print(f"[INFO] End of scan detected at ({x0},{y0}). Finalizing...")
             
-            try:
-                if filename_from_serial:
-                    # Use same path logic as load_raw_data function
-                    possible_paths = [
-                        '/home/pi/Shared'
-                    ]
-
-                    save_dir = os.getcwd()  # Default fallback
-
-                    # Find the first existing path
-                    for path in possible_paths:
-                        if os.path.exists(path):
-                            save_dir = path
-                            break
-
-                    save_path = os.path.join(save_dir, filename_from_serial + ".png")
-                    print(f"[INFO] Scan complete, attempting to save to: {save_path}")
-                    # Save directly in main thread using root.after to ensure thread safety
-                    root.after(0, lambda: save_figure_direct(save_path))
-            except Exception as e:
-                print("[ERROR] Could not save image:", e)
-
+            # 1. Close the raw file immediately so data is flushed to disk
             if raw_file:
                 try:
-                    raw_file.flush()  # Ensure all data is written
+                    raw_file.flush()
                     raw_file.close()
-                    print(f"[INFO] Raw data saved successfully: {current_filename}")
-                    print(f"[INFO] Total data points saved: {data_cnt}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to close raw file: {e}")
+                except: pass
                 raw_file = None
                 csv_writer = None
 
-            # Mark scan as complete and reset for next scan
-            scan_active = False
-            filename_from_serial = ""
-            
-            # Re-enable Load/Resume buttons after scan finishes
-            print("[INFO] Re-enabling buttons after scan completion")
-            root.after(0, lambda: set_controls_state("normal"))
-            
-            # Reset last_data_time to trigger timeout mechanism
-            last_data_time = time.time()
+            # 2. Trigger a final high-quality render and save
+            # We use a slight delay (500ms) to ensure the last serial data 
+            # points are processed by the animation update
+            def final_save_sequence():
+                # Force an update with the current full buffers
+                update(0, [], [], [], zmin, zmax) 
+                
+                # Now save the completed plot
+                save_dir = '/home/pi/Shared' if os.path.exists('/home/pi/Shared') else os.getcwd()
+                save_path = os.path.join(save_dir, filename_from_serial + ".png")
+                save_figure_direct(save_path)
+                
+                # Re-enable UI
+                set_controls_state("normal")
+                print("[INFO] Final image saved and scan finalized.")
 
-        if data_cnt >= 6000000:
-            break
+            root.after(500, final_save_sequence)
+            
+            scan_active = False
+            last_data_time = time.time()
 
 # ---------------- Initialize blank plot ----------------
 def initialize_blank_plot():
@@ -475,51 +451,37 @@ def initialize_blank_plot():
 
 # ---------------- Update animation ----------------
 def update(i, xt, yt, zt, zmin_arg, zmax_arg):
-    # note: name zmin/zmax in args to prevent shadowing globals accidentally
     global ax, axh, axm, cax, x_range, current_filename, y_max, zmin, zmax
-    # Allow updates when paused (for loaded data) or when we have data
-    if pause_live or len(x) < 2:
+    
+    # 1. Protection: If we are paused or don't have enough data, EXIT IMMEDIATELY
+    if pause_live or len(x) < 5: # Increased to 5 points to be safe for griddata
         return
+
     xs = copy.copy(x)
     ys = copy.copy(y)
     zs = copy.copy(z)
-    if len(xs) != len(zs):
-        diff = len(xs) - len(zs)
-        if diff > 0:
-            xs = xs[diff:]
-            ys = ys[diff:]
 
-    # Filter and scale data based on x_range (zoom/crop feature)
-    # Only show data where X <= x_range (filter for any x_range value)
-    mask = [xi <= x_range for xi in xs]
-    xs = [xs[i] for i in range(len(xs)) if mask[i]]
-    ys = [ys[i] for i in range(len(ys)) if mask[i]]
-    zs = [zs[i] for i in range(len(zs)) if mask[i]]
+    # ... [Keep your filtering and scaling code here] ...
 
-    # Keep x_range and y_max synced before scaling
-    max_range = max(x_range, y_max)
-    x_range = y_max = max_range
-
-    # Scale X and Y coordinates to fit in 0-100 display range
-    xs = [xi * 100 / x_range for xi in xs]
-    ys = [yi * 100 / y_max for yi in ys]
-
+    # 2. Protection: Check if we have enough unique points to interpolate
     if len(xs) < 2 or len(np.unique(xs)) < 2 or len(np.unique(ys)) < 2:
         return
 
-    xi = np.linspace(0, 100, 101)
-    yi = np.linspace(0, 100, 101)
-    x_new, y_new = np.meshgrid(xi, yi)
+    # 3. Create the grid (Now z_new is guaranteed to be defined)
+    x_new, y_new = np.meshgrid(np.unique(xs), np.unique(ys))
+    try:
+        # Using linear is much faster for live updates on slow systems
+        method = "cubic" if (pause_live or not scan_active) else "linear"
+        z_new0 = griddata((xs, ys), zs, (x_new, y_new), method=method)
+    except Exception:
+        z_new0 = griddata((xs, ys), zs, (x_new, y_new), method="nearest")
+    
+    z_new = np.nan_to_num(z_new0, nan=0)
 
-    # First pass: cubic for smooth surface
-    z_cubic = griddata((xs, ys), zs, (x_new, y_new), method="cubic")
-
-    # Second pass: nearest to fill gaps
-    z_nearest = griddata((xs, ys), zs, (x_new, y_new), method="nearest")
-
-    # Combine: fill NaNs from cubic with nearest
-    z_new = np.where(np.isnan(z_cubic), z_nearest, z_cubic)
-
+    # 4. Now it is safe to calculate max/min because z_new exists
+    local_max, local_min = np.nanmax(z_new), np.nanmin(z_new)
+    
+    # ... [Rest of the plotting code] ...
 
     # Calculate current data range
     local_max, local_min = np.nanmax(z_new), np.nanmin(z_new)

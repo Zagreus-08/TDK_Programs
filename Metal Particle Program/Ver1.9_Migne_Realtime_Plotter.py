@@ -31,10 +31,36 @@ import threading
 import serial
 import time
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import pytz
 
 # ---------------- Global vars ----------------
+# Timezone configuration
+current_timezone = pytz.timezone('UTC')  # Default timezone
+
+def load_timezone_preference():
+    """Load saved timezone preference from file"""
+    global current_timezone
+    try:
+        with open('/home/pi/Desktop/migne/timezone.txt', 'r') as f:
+            saved_tz = f.read().strip()
+            current_timezone = pytz.timezone(saved_tz)
+            print(f"[INFO] Loaded timezone preference: {saved_tz}")
+            return saved_tz
+    except Exception as e:
+        print(f"[INFO] No saved timezone preference, using UTC: {e}")
+        return 'UTC'
+
+def save_timezone_preference(timezone_name):
+    """Save timezone preference to file"""
+    try:
+        os.makedirs('/home/pi/Desktop/migne', exist_ok=True)
+        with open('/home/pi/Desktop/migne/timezone.txt', 'w') as f:
+            f.write(timezone_name)
+        print(f"[INFO] Saved timezone preference: {timezone_name}")
+    except Exception as e:
+        print(f"[ERROR] Failed to save timezone preference: {e}")
 x, y, z = [], [], []
 zmin, zmax = -0.1, 0.1
 x_range = 100  # Default X-axis range (50-300)
@@ -145,7 +171,8 @@ def start_new_raw_file(name_hint=""):
     """Start a new CSV for saving live scan data"""
     global raw_file, csv_writer, current_filename
     if not name_hint:
-        name_hint = time.strftime("%Y%m%d_%H%M%S")
+        # Use simple sequential naming if no hint provided
+        name_hint = "scan_data"
 
     raw_dir = '/home/pi/Shared/raw_data'
     os.makedirs(raw_dir, exist_ok=True)
@@ -752,13 +779,13 @@ def load_raw_data():
             # Populate listbox with formatted entries
             for filename, full_path, mtime in csv_files:
                 file_data[filename] = (full_path, mtime)
-                # Format: date/time + filename
+                # Format: date/time + filename (12-hour format with AM/PM)
                 if mtime > 0:
                     dt = datetime.fromtimestamp(mtime)
-                    date_str = dt.strftime("%m/%d %H:%M")
+                    date_str = dt.strftime("%m/%d %I:%M %p")
                     display_text = f"{date_str}  {filename}"
                 else:
-                    display_text = f"--/-- --:--  {filename}"
+                    display_text = f"--/-- --:-- --  {filename}"
                 file_listbox.insert(tk.END, display_text)
             
             # Update file count
@@ -774,7 +801,7 @@ def load_raw_data():
     
     def get_filename_from_display(display_text):
         """Extract actual filename from display text (removes date prefix)"""
-        # Format is "MM/DD HH:MM  filename" or "--/-- --:--  filename"
+        # Format is "MM/DD HH:MM AM/PM  filename" or "--/-- --:-- --  filename"
         parts = display_text.split("  ", 1)
         if len(parts) == 2:
             return parts[1]
@@ -814,6 +841,32 @@ def load_raw_data():
                 selected_file[0] = os.path.join(current_dir_var.get(), filename)
             dialog.destroy()
     file_listbox.bind("<Double-Button-1>", on_double_click)
+    
+    # Clock display at bottom of dialog
+    clock_frame = tk.Frame(dialog, bg="#e5e5e5")
+    clock_frame.pack(fill=tk.X, padx=10, pady=(5, 0))
+    
+    clock_label = tk.Label(clock_frame, text="", font=("Arial", 9), bg="#e5e5e5", fg="#666666")
+    clock_label.pack(side=tk.LEFT, padx=5)
+    
+    def update_dialog_clock():
+        from datetime import datetime
+        try:
+            # Get current time in selected timezone
+            utc_now = datetime.now(pytz.utc)
+            local_now = utc_now.astimezone(current_timezone)
+            now = local_now.strftime("%Y-%m-%d %I:%M:%S %p")
+            clock_label.config(text=now)
+        except Exception as e:
+            # Fallback to system time if timezone conversion fails
+            now = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+            clock_label.config(text=now)
+        try:
+            dialog.after(1000, update_dialog_clock)
+        except:
+            pass
+    
+    update_dialog_clock()
     
     # Buttons
     btn_frame = tk.Frame(dialog, bg="#e5e5e5")
@@ -1065,6 +1118,7 @@ if __name__ == '__main__':
 
     controls_frame = tk.Frame(main_frame, bg="#d9d9d9", padx=6, pady=6, relief="ridge", bd=3)
     controls_frame.grid(row=0, column=1, sticky="ns")
+    controls_frame.grid_remove()
 
     fig = plt.Figure(figsize=[13, 6], facecolor=(0.9, 0.9, 0.9))
     spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
@@ -1084,6 +1138,75 @@ if __name__ == '__main__':
     hidden_toolbar.pack_forget()
 
     btn_style = {"font": ("Arial", 11, "bold"), "bg": "#f2f2f2", "width": 10, "height": 2, "relief": "raised"}
+
+    # Clock display at top of controls
+    clock_label = tk.Label(text="", font=("Arial", 10, "bold"), bg="#d9d9d9", fg="#333333")
+    clock_label.place(y=10, x=70)
+    
+    # Timezone selection dropdown (same line as clock)
+    timezone_frame = tk.Frame(bg="#d9d9d9")
+    timezone_frame.place(y=17, x=150)
+    
+    # Common timezones list
+    common_timezones = [
+        'UTC',
+        'US/Eastern',
+        'US/Central',
+        'US/Mountain',
+        'US/Pacific',
+        'Europe/London',
+        'Europe/Paris',
+        'Europe/Berlin',
+        'Asia/Tokyo',
+        'Asia/Shanghai',
+        'Asia/Hong_Kong',
+        'Asia/Singapore',
+        'Asia/Dubai',
+        'Australia/Sydney',
+        'Pacific/Auckland'
+    ]
+    
+    # Load saved timezone preference
+    saved_tz = load_timezone_preference()
+    timezone_var = tk.StringVar(value=saved_tz)
+    timezone_combo = ttk.Combobox(timezone_frame, textvariable=timezone_var, 
+                                  values=common_timezones, state='readonly', 
+                                  width=15, font=("Arial", 9))
+    timezone_combo.pack(side=tk.LEFT, padx=2)
+    
+    def on_timezone_change(event=None):
+        global current_timezone
+        try:
+            selected_tz = timezone_var.get()
+            current_timezone = pytz.timezone(selected_tz)
+            print(f"[INFO] Timezone changed to: {selected_tz}")
+            # Save timezone preference
+            save_timezone_preference(selected_tz)
+            # Immediately update clock display
+            update_clock()
+        except Exception as e:
+            print(f"[ERROR] Failed to change timezone: {e}")
+    
+    timezone_combo.bind('<<ComboboxSelected>>', on_timezone_change)
+    
+    def update_clock():
+        from datetime import datetime
+        try:
+            # Get current time in selected timezone
+            utc_now = datetime.now(pytz.utc)
+            local_now = utc_now.astimezone(current_timezone)
+            now = local_now.strftime("%Y-%m-%d\n%I:%M:%S %p")
+            clock_label.config(text=now)
+        except Exception as e:
+            # Fallback to system time if timezone conversion fails
+            now = datetime.now().strftime("%Y-%m-%d\n%I:%M:%S %p")
+            clock_label.config(text=now)
+        try:
+            root.after(1000, update_clock)
+        except:
+            pass
+    
+    update_clock()
 
     def safe_action(func):
         ani.event_source.stop()
@@ -1107,8 +1230,8 @@ if __name__ == '__main__':
                 if base_filename.startswith("raw_"):
                     base_filename = base_filename[4:]
             else:
-                # Fallback to timestamp if no filename available
-                base_filename = time.strftime("%Y%m%d_%H%M%S")
+                # Fallback to simple name if no filename available
+                base_filename = "scan_image"
 
             # Determine save directory
             possible_paths = [
@@ -1123,7 +1246,7 @@ if __name__ == '__main__':
                     save_dir = path
                     break
 
-            # Create full filename path
+            # Create full filename path (no timestamp added)
             filename = os.path.join(save_dir, f"{base_filename}.png")
 
             try:
