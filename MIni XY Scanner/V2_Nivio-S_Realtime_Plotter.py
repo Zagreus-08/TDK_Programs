@@ -89,6 +89,7 @@ def save_timezone_preference(timezone_name):
 current_phase = 1  # 1 = horizontal (buffer), 2 = vertical (plot)
 phase1_buffer = {}  # Dictionary to store Phase 1 data: {(x, y): [z_values]}
 scan_status_label = None  # Will be set by GUI
+y_offset = None  # Y-axis offset to normalize minimum Y to 0
 
 x, y, z = [], [], []
 zmin, zmax = -0.1, 0.1
@@ -315,7 +316,7 @@ def check_serial_timeout():
 def read_loop():
     global raw_file, csv_writer, current_filename, scan_active, last_data_time, pause_live, x_range, y_max, zmin, zmax
     global scan_area_x, scan_area_y, scan_count_x, scan_count_y, frozen_x_range, frozen_y_max
-    global current_phase, phase1_buffer, scan_status_label
+    global current_phase, phase1_buffer, scan_status_label, y_offset
     data_cnt = 0
     filename_from_serial = ""
 
@@ -361,6 +362,10 @@ def read_loop():
                 try:
                     phase = int(parts[3])
                     current_phase = phase
+                    # Update status label to show Horizontal/Vertical
+                    if scan_status_label:
+                        status_text = "Horizontal Scan" if phase == 1 else "Vertical Scan"
+                        root.after(0, lambda txt=status_text: scan_status_label.config(text=txt))
                 except (ValueError, IndexError):
                     pass
 
@@ -406,6 +411,7 @@ def read_loop():
             # Clear Phase 1 buffer for new scan
             phase1_buffer.clear()
             current_phase = 1
+            y_offset = None  # Reset Y offset for new scan
             print("[INFO] Phase 1 buffer cleared, starting Phase 1")
             
             # Update status label
@@ -490,12 +496,19 @@ def read_loop():
             print(f"[Phase 1] Buffered: X={x0:.2f}, Y={y0:.2f}, Z={z0:.6f} (buffer size: {len(phase1_buffer)})")
             
         elif phase == 2:
-            # Phase 2: Plot data directly (NO averaging - causes bad Z values)
-            # Just use Phase 2 data as-is for realtime plotting
+            # Phase 2: Plot data with Y normalization to start at 0
+            # Set Y offset on first Phase 2 data point
+            if y_offset is None:
+                y_offset = y0
+                print(f"[Phase 2] Y offset set to {y_offset:.2f} (will be treated as Y=0)")
+            
+            # Normalize Y coordinate: subtract offset so minimum becomes 0
+            normalized_y = y0 - y_offset
+            
             x.append(x0)
-            y.append(y0)
+            y.append(normalized_y)
             z.append(z0)
-            print(f"[Phase 2] Plotting: X={x0:.2f}, Y={y0:.2f}, Z={z0:.6f} (total points: {len(x)})")
+            print(f"[Phase 2] Plotting: X={x0:.2f}, Y={y0:.2f}→{normalized_y:.2f}, Z={z0:.6f} (total points: {len(x)})")
         else:
             # Unknown phase, treat as Phase 1 (buffer)
             coord_key = (round(x0), round(y0))
@@ -747,17 +760,18 @@ def update(i, xt, yt, zt, zmin_arg, zmax_arg):
     axm.imshow(im_Migne, alpha=0.7)
     axm.axis("off")
 
-    # Display filename for live scan
+    # Display phase status instead of filename
     display_name = ""
-    if current_filename:
-        base_name = os.path.splitext(os.path.basename(current_filename))[0]
-        if base_name.startswith("raw_"):
-            base_name = base_name[4:]
-        display_name = f"Live Scan: {base_name}"
+    if current_phase == 1:
+        display_name = "Horizontal Scan"
+    elif current_phase == 2:
+        display_name = "Vertical Scan"
+    else:
+        display_name = "Waiting for scan..."
 
     if display_name:
         axm.text(0.5, -0.1, display_name, transform=axm.transAxes,
-                ha='center', va='top', fontsize=10, color='black', weight='bold')
+                ha='center', va='top', fontsize=12, color='blue', weight='bold')
     
     # Display scan coverage info if available
     if scan_count_x > 0 or scan_count_y > 0:
@@ -791,7 +805,18 @@ def update(i, xt, yt, zt, zmin_arg, zmax_arg):
     # Adjust ticks to show display ranges in mm (BOTH AXES INVERTED)
     # Use the display ranges (frozen or current) directly
     label_x_range = display_x_range
-    label_y_max = display_y_max
+    
+    # For Y-axis: if we have normalized data (y_offset is set), calculate actual range from data
+    # Otherwise use display_y_max
+    if y_offset is not None and len(ys) > 0:
+        # Y has been normalized - use actual data range
+        actual_y_max = max(ys) if ys else display_y_max
+        actual_y_min = min(ys) if ys else 0
+        label_y_max = actual_y_max - actual_y_min  # Range of normalized data
+        print(f"[DEBUG] Y-axis normalized: min={actual_y_min:.2f}, max={actual_y_max:.2f}, range={label_y_max:.2f}")
+    else:
+        # No normalization yet - use display_y_max
+        label_y_max = display_y_max
     
     ax.set_xticks(np.linspace(0, 100, 6))
     # X-axis labels: max at left (0 display), 0 at right (100 display)
@@ -1332,6 +1357,11 @@ if __name__ == '__main__':
     # Clock display at top of controls
     clock_label = tk.Label(text="", font=("Arial", 10, "bold"), bg="#d9d9d9", fg="#333333")
     clock_label.place(y=10, x=70)
+    
+    # Scan status label - shows "Horizontal Scan" or "Vertical Scan"
+    scan_status_label = tk.Label(root, text="Waiting for scan...", font=("Arial", 12, "bold"), 
+                                  bg="#0046ad", fg="yellow", relief="flat", bd=0)
+    scan_status_label.place(x=400, y=55)
     
     # Timezone selection: click the clock to open a timezone picker dialog
     timezone_frame = tk.Frame(bg="#d9d9d9")

@@ -2125,6 +2125,42 @@ class SimpleScanClass:
         if SystemFuncClass.stop_flag:
             return
         
+        # ========== MANUAL SENSOR ROTATION PAUSE ==========
+        print("\n=== WAITING FOR SENSOR ROTATION ===")
+        print("Please rotate the sensor manually, then click Continue button")
+        
+        # Signal GUI to show Continue button and wait
+        if self.gui:
+            # Set flag to indicate waiting for sensor rotation
+            self.gui._waiting_for_rotation = True
+            self.gui._rotation_confirmed = False
+            
+            # Update status and show Continue button on GUI thread
+            try:
+                self.gui.win.after(0, lambda: self.gui.set_status("Rotate Sensor", bg='orange', blink=False))
+                self.gui.win.after(0, lambda: self.gui.show_continue_button())
+            except Exception as e:
+                print(f"Error showing continue button: {e}")
+            
+            # Wait for user to click Continue and confirm rotation
+            print("Waiting for user confirmation...")
+            while self.gui._waiting_for_rotation:
+                if SystemFuncClass.stop_flag:
+                    print("Rotation wait aborted by stop flag")
+                    return
+                time.sleep(0.1)
+            
+            # Check if rotation was confirmed (user clicked Yes in dialog)
+            if not self.gui._rotation_confirmed:
+                print("Sensor rotation not confirmed - aborting Phase 2")
+                return
+            
+            print("Sensor rotation confirmed - proceeding to Phase 2")
+        else:
+            # No GUI - just wait 5 seconds as fallback
+            print("No GUI available - waiting 5 seconds for manual rotation...")
+            time.sleep(5.0)
+        
         print("Ready to start Phase 2")
     
         # ========== PHASE 2: VERTICAL SCANNING (SIMPLIFIED - MATCHES PHASE 1 PATTERN) ==========
@@ -2172,7 +2208,7 @@ class SimpleScanClass:
                 # UP: Stop when realtime Y position reaches near home
                 # Keep 2mm threshold for safety, plotter will treat this as Y=0
                 print(f"Column {count}: vertical pass UP until Y position reaches ~-2 mm (threshold-based, collecting data)")
-                ok = self.scan_up_until_threshold(threshold_mm=2.0, current_x_mm=current_x_mm)
+                ok = self.scan_up_until_threshold(threshold_mm=5.0, current_x_mm=current_x_mm)
             else:
                 target_y_mm = bottom_target_mm
                 print(f"Column {count}: vertical pass DOWN to {target_y_mm:.2f} mm (collecting data)")
@@ -2520,6 +2556,18 @@ class GUIClass(PortDefineClass):
         self.jog_x_count_label.place(x=500, y=440)
         self.jog_y_count_label = tk.Label(self.win, text="Y (mm): 0", font=TkFont.Font(size=12), bg='#0046ad', fg='white')
         self.jog_y_count_label.place(x=660, y=440)
+
+        # Continue button (always visible, but disabled until rotation pause)
+        # Position it next to the Show Keyboard button to fit naturally in the UI
+        self.ContinueButton = tk.Button(self.win, text="Continue", font=self.buttonFont3, bg='lightgray',
+                                        command=self.on_continue_clicked, height=4, width=8)
+        # Place it right below the Show Keyboard button
+        self.ContinueButton.place(x=340, y=365)
+        self.ContinueButton.config(state='disabled')  # Disabled initially (grayed out)
+        
+        # Rotation wait flags
+        self._waiting_for_rotation = False
+        self._rotation_confirmed = False
 
         # Area calibration display (new)
         self.area_x_display = tk.Label(self.win, text=f"Area X (mm): {int(self.saved_config.get('area_x_mm', 0))}", font=TkFont.Font(size=12), bg='#0046ad', fg='white')
@@ -2899,6 +2947,47 @@ class GUIClass(PortDefineClass):
         # Only set back to READY if EMG is not active
         if not self._emg_active:
             self.set_status("READY", bg=self.status_ready_bg, blink=False)
+
+    # --------------------- SENSOR ROTATION PAUSE ---------------------
+    def show_continue_button(self):
+        """Enable the Continue button during sensor rotation wait"""
+        try:
+            self.ContinueButton.config(state='normal', bg='yellow')  # Enable and make it yellow
+            print("[GUI] Continue button enabled")
+        except Exception as e:
+            print(f"[GUI] Error enabling continue button: {e}")
+    
+    def hide_continue_button(self):
+        """Disable the Continue button after rotation confirmed"""
+        try:
+            self.ContinueButton.config(state='disabled', bg='lightgray')  # Disable and gray it out
+            print("[GUI] Continue button disabled")
+        except Exception as e:
+            print(f"[GUI] Error disabling continue button: {e}")
+    
+    def on_continue_clicked(self):
+        """Handle Continue button click - ask for confirmation"""
+        print("[GUI] Continue button clicked")
+        
+        # Show confirmation dialog
+        result = messagebox.askyesno(
+            "Sensor Rotation",
+            "Have you finished rotating the sensor?\n\nClick Yes to proceed to Phase 2\nClick No to continue waiting"
+        )
+        
+        if result:  # User clicked Yes
+            print("[GUI] User confirmed sensor rotation - proceeding to Phase 2")
+            self._rotation_confirmed = True
+            self._waiting_for_rotation = False
+            
+            # Hide the Continue button
+            self.hide_continue_button()
+            
+            # Update status back to Scanning
+            self.set_status("Scanning...", blink=True, blink_color='green')
+        else:  # User clicked No
+            print("[GUI] User not ready - continuing to wait")
+            # Keep waiting - do nothing, button stays visible
 
     # --------------------- EXIT ---------------------
     def gui_exit(self):
