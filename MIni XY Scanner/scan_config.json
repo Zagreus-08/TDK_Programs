@@ -1,0 +1,9 @@
+{
+  "area_x_mm": 190.0,
+  "area_y_mm": 190.0,
+  "row_step_mm": 9.0,
+  "x_speed_rpm": 60,
+  "y_speed_rpm": 60,
+  "x_count": null,
+  "y_count": 21
+}
