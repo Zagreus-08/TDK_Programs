@@ -444,7 +444,7 @@ def read_loop():
         # ---------- Auto-resume live scan when data received while paused ----------
         if pause_live:
             print("[INFO] Serial data received while viewing loaded data. Auto-resuming live scan.")
-            pause_live = False
+            pause_live = False      
             x.clear()
             y.clear()
             z.clear()
