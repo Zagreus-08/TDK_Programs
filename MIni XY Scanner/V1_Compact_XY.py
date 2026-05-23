@@ -1351,7 +1351,7 @@ class SimpleScanClass:
 
         return True
 
-    def scan_x_to_position_mm_corrected(self, target_mm, hold_after_limit=0.05, collect_data=False, current_y_mm=0.0, use_threshold=True, threshold_mm=5.0, speed_multiplier=1.0):
+    def scan_x_to_position_mm_corrected(self, target_mm, hold_after_limit=0.05, collect_data=False, current_y_mm=0.0, use_threshold=True, threshold_mm=5.0, speed_multiplier=20.0):
         """
         Move X axis to target position with CORRECTED coordinate system.
         
@@ -1774,7 +1774,7 @@ class SimpleScanClass:
                 except Exception:
                     pass
 
-    def scan_y_to_position_mm_corrected(self, target_mm, hold_after_limit=0.05, collect_data=False, current_x_mm=0.0, use_threshold=True, threshold_mm=5.0, speed_multiplier=1.0):
+    def scan_y_to_position_mm_corrected(self, target_mm, hold_after_limit=0.05, collect_data=False, current_x_mm=0.0, use_threshold=True, threshold_mm=5.0, speed_multiplier=2.0):
         """
         Move Y axis to target position with CORRECTED coordinate system.
         
@@ -2107,7 +2107,7 @@ class SimpleScanClass:
         THRESHOLD_MM = 5.0
         
         # Speed multiplier for return movements (no data collection)
-        RETURN_SPEED_MULTIPLIER = 2.0  # 2x faster for return movements
+        RETURN_SPEED_MULTIPLIER = 3.0  # 2x faster for return movements
         
         # Calculate targets dynamically from calibrated area (with threshold buffer)
         # LEFT target: go to (area - threshold) to avoid hitting X- limit
@@ -2158,7 +2158,8 @@ class SimpleScanClass:
         if not ok:
             print("simple_scan: initial LEFT pass aborted (limit/EMG/stop).")
             return
-    
+        time.sleep(0.5)
+
         # Return RIGHT without data collection (FASTER)
         print(f"Row 0: RIGHT return to X={right_target_mm:.1f}mm (no data, {RETURN_SPEED_MULTIPLIER}x speed)")
         ok = self.scan_x_to_position_mm_corrected(right_target_mm, collect_data=False, current_y_mm=current_y_mm,
@@ -2166,7 +2167,8 @@ class SimpleScanClass:
         if not ok:
             print("simple_scan: return RIGHT pass aborted (limit/EMG/stop).")
             return
-    
+        time.sleep(0.5)
+
         # Repeat for each Y-count: move down, scan left (data), return right (no data)
         for count in range(1, self.y_count + 1):
             if SystemFuncClass.stop_flag:
@@ -4103,6 +4105,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
