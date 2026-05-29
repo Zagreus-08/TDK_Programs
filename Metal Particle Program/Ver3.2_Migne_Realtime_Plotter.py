@@ -124,7 +124,7 @@ def save_timezone_preference(timezone_name):
     except Exception as e:
         print(f"[ERROR] Failed to save timezone preference: {e}")
 x, y, z, z2 = [], [], [], []  # Added z2 buffer for second sensor data
-zmin, zmax = -0.1, 0.1
+zmin, zmax = -0.5, 0.5
 
 # FIXED DISPLAY RANGE: Always 920x920mm regardless of actual scan size
 FIXED_DISPLAY_X = 700  # Fixed X-axis display range in mm
@@ -153,8 +153,8 @@ last_data_time = time.time()  # Track when we last received serial data
 
 # Z-range lock feature
 z_range_locked = False   # Toggle for lock mode
-locked_zmin = -0.1       # Stored locked values
-locked_zmax = 0.1
+locked_zmin = -0.5       # Stored locked values
+locked_zmax = 0.5
 
 # Loaded data cache for re-rendering with adjusted Z-range
 loaded_data_cache = None
@@ -498,7 +498,7 @@ def read_loop():
             
             # Reset zmin/zmax for new scan to default values (unless locked)
             if not z_range_locked:
-                zmin, zmax = -0.1, 0.1
+                zmin, zmax = -0.5, 0.5
                 print(f"[INFO] Reset color bar range to zmin={zmin}, zmax={zmax}")
             else:
                 print(f"[INFO] Z-range locked at zmin={locked_zmin}, zmax={locked_zmax}")
@@ -1288,7 +1288,7 @@ def resume_live():
     z2.clear()  # Clear z2 buffer as well
     # ALWAYS reset z-axis limits to default for clean display
     # Even if locked, the display should show -0.1 to 0.1 for blank plot
-    zmin, zmax = -0.1, 0.1
+    zmin, zmax = -0.5, 0.5
     
     # Reset frozen ranges for new scan
     frozen_x_range = None
