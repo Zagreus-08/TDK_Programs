@@ -101,7 +101,7 @@ DAQ_TYPE = None  # Will be 'MCC128', 'ADS1115', 'MCP3008', or None
 
 # MCC 128 DAQ HAT configuration (like mignev6.py)
 mcc128_hat = None
-mcc128_channels = [0]  # Default to channel 0
+mcc128_channels = [0, 1]  # Channel 0 for primary data, Channel 1 for data2
 mcc128_samples_per_channel = 100
 mcc128_scan_rate = 8000.0
 mcc128_options = None
@@ -236,11 +236,11 @@ def save_config(cfg):
 # -----------------------
 # Linear Motion (GT2 Belt 2mm pitch + 20T Pulley)
 # -----------------------
-MICROSTEPS = 4                # MKS Servo57c set mstep = 4 (hardware)
+MICROSTEPS = 4               # MKS Servo57c set mstep = 4 (hardware)
 MOTOR_FULL_STEPS = 200        # typical 1.8  stepper
 
-BELT_PITCH_MM = 2.0
-PULLEY_TEETH = 20
+BELT_PITCH_MM = 5.0
+PULLEY_TEETH = 28
 DISTANCE_PER_REV_MM = BELT_PITCH_MM * PULLEY_TEETH   # 40.0 mm
 
 PULSES_PER_REV = MOTOR_FULL_STEPS * MICROSTEPS      # 200 * 4 = 800
@@ -255,20 +255,21 @@ def pulses_to_mm(pulses: int) -> float:
 # -----------------------
 # Serial Data Transmission
 # -----------------------
-def send_serial_data(x_mm, y_mm, z_value, phase=1):
+def send_serial_data(x_mm, y_mm, z_value, phase=1, z_value2=0.0):
     """Send scan data point to plotter via serial with phase indicator
     
     Args:
         x_mm: X coordinate in mm
         y_mm: Y coordinate in mm
-        z_value: Sensor reading
+        z_value: Sensor reading from channel 0
         phase: 1 for horizontal scan (buffer), 2 for vertical scan (plot)
+        z_value2: Sensor reading from channel 1 (data2)
     """
     global serial_port
     if serial_port and serial_port.is_open:
         try:
-            # Format: x,y,z,phase\n (phase 1=buffer, 2=plot)
-            data_str = f"{x_mm:.2f},{y_mm:.2f},{z_value:.6f},{phase}\n"
+            # Format: x,y,z,phase,z2\n (phase 1=buffer, 2=plot)
+            data_str = f"{x_mm:.2f},{y_mm:.2f},{z_value:.6f},{phase},{z_value2:.6f}\n"
             serial_port.write(data_str.encode('ascii'))
             serial_port.flush()
         except Exception as e:
@@ -285,14 +286,14 @@ def read_sensor_value():
     - MCP3008 (SPI): 10-bit ADC, 0-3.3V range
     
     Returns:
-        float: Sensor reading in volts (or 0.0 if no DAQ available)
+        tuple: (channel0_voltage, channel1_voltage) or (0.0, 0.0) if no DAQ available
     """
     global daq_device, daq_channel, DAQ_TYPE
     global mcc128_hat, mcc128_channels, mcc128_samples_per_channel, mcc128_scan_rate, mcc128_options, mcc128_timeout
     
     if daq_device is None:
         # No DAQ available - return 0.0 (no simulated data)
-        return 0.0
+        return (0.0, 0.0)
     
     try:
         if DAQ_TYPE == 'MCC128':
@@ -303,39 +304,45 @@ def read_sensor_value():
             mcc128_hat.a_in_scan_start(channel_mask, mcc128_samples_per_channel, mcc128_scan_rate, mcc128_options)
             
             # Read data
-            read_result = mcc128_hat.a_in_scan_read(mcc128_samples_per_channel, mcc128_timeout)
+            read_result = mcc128_hat.a_in_scan_read(mcc128_samples_per_channel * len(mcc128_channels), mcc128_timeout)
             
             # Stop and cleanup
             mcc128_hat.a_in_scan_stop()
             mcc128_hat.a_in_scan_cleanup()
             
-            # Calculate average voltage from samples
+            # Calculate average voltage from samples for each channel
             if read_result.data and len(read_result.data) > 0:
-                voltage = sum(read_result.data) / len(read_result.data)
-                return voltage
+                # Data is interleaved: [ch0, ch1, ch0, ch1, ...]
+                # Separate channels
+                ch0_data = [read_result.data[i] for i in range(0, len(read_result.data), 2)]
+                ch1_data = [read_result.data[i] for i in range(1, len(read_result.data), 2)]
+                
+                voltage_ch0 = sum(ch0_data) / len(ch0_data) if ch0_data else 0.0
+                voltage_ch1 = sum(ch1_data) / len(ch1_data) if ch1_data else 0.0
+                return (voltage_ch0, voltage_ch1)
             else:
-                return 0.0
+                return (0.0, 0.0)
                 
         elif DAQ_TYPE == 'ADS1115':
-            # Read from ADS1115 (I2C)
+            # Read from ADS1115 (I2C) - only channel 0 for now
             # Returns voltage directly
             voltage = daq_channel.voltage
-            return voltage
+            return (voltage, 0.0)
             
         elif DAQ_TYPE == 'MCP3008':
-            # Read from MCP3008 (SPI)
+            # Read from MCP3008 (SPI) - only channel 0 for now
             # Returns 10-bit value (0-1023)
             adc_value = read_mcp3008(daq_device, daq_channel)
             # Convert to voltage (0-3.3V range)
             voltage = (adc_value / 1023.0) * 3.3
-            return voltage
+            return (voltage, 0.0)
             
         else:
-            return 0.0
+            return (0.0, 0.0)
             
     except Exception as e:
         print(f"Sensor read error: {e}")
-        return 0.0
+        return (0.0, 0.0)
 
 # -----------------------
 # Motion Conversion (RPM <-> Hz)
@@ -1301,16 +1308,16 @@ class SimpleScanClass:
                         self.xy.update_position_x(direction_sign)
                         current_x_mm = self.xy.get_position_x_mm()
                         
-                        # Read sensor value
-                        z_value = read_sensor_value()
+                        # Read sensor values (both channels)
+                        z_value, z_value2 = read_sensor_value()
                         
                         # Send data to plotter (convert to absolute coordinates)
                         # X position is negative when moving left, so convert to positive range
                         abs_x_mm = abs(current_x_mm)
                         abs_y_mm = abs(current_y_mm)
-                        send_serial_data(abs_x_mm, abs_y_mm, z_value, phase=1)  # Phase 1: buffer only
+                        send_serial_data(abs_x_mm, abs_y_mm, z_value, phase=1, z_value2=z_value2)  # Phase 1: buffer only
                         
-                        print(f"Data: X={abs_x_mm:.2f}, Y={abs_y_mm:.2f}, Z={z_value:.6f}")
+                        print(f"Data: X={abs_x_mm:.2f}, Y={abs_y_mm:.2f}, Z={z_value:.6f}, Z2={z_value2:.6f}")
                     except Exception as e:
                         print(f"Data collection error: {e}")
 
@@ -1344,7 +1351,7 @@ class SimpleScanClass:
 
         return True
 
-    def scan_x_to_position_mm_corrected(self, target_mm, hold_after_limit=0.05, collect_data=False, current_y_mm=0.0):
+    def scan_x_to_position_mm_corrected(self, target_mm, hold_after_limit=0.05, collect_data=False, current_y_mm=0.0, use_threshold=True, threshold_mm=5.0, speed_multiplier=20.0):
         """
         Move X axis to target position with CORRECTED coordinate system.
         
@@ -1357,6 +1364,9 @@ class SimpleScanClass:
         - Internal position tracking uses negative values when moving LEFT
         - But we report positive values to the plotter (abs value)
         - target_mm: 0.0 = right side (home), positive = left side
+        - use_threshold: if True, stop based on position threshold instead of limit switch
+        - threshold_mm: stop when within this distance of target (prevents hitting limits)
+        - speed_multiplier: multiply speed by this factor (e.g., 2.0 for 2x faster return movements)
         
         Returns True on success, False on abort/limit/EMG.
         """
@@ -1380,12 +1390,15 @@ class SimpleScanClass:
         if target_pulses <= 0:
             return True
 
+        # Apply speed multiplier for faster return movements (no data collection)
+        actual_speed = int(self.x_speed * speed_multiplier)
+        
         # Configure motor and start counting
         try:
             if direction == "LEFT":
-                self.xy.XmotorSet(1, self.x_speed)
+                self.xy.XmotorSet(1, actual_speed)
             else:
-                self.xy.XmotorSet(0, self.x_speed)
+                self.xy.XmotorSet(0, actual_speed)
             self.xy.Xstart()
         except Exception:
             pass
@@ -1405,26 +1418,57 @@ class SimpleScanClass:
                     SystemFuncClass().AllStop()
                     return False
 
+                # Check position-based threshold stopping (primary method)
+                if use_threshold:
+                    try:
+                        self.xy.update_position_x(direction_sign)
+                        current_internal_mm = self.xy.get_position_x_mm()
+                        
+                        # Check if we're within threshold of target
+                        if direction == "LEFT":
+                            # Moving LEFT (negative direction): stop when current <= target + threshold
+                            if current_internal_mm <= (target_internal_mm + threshold_mm):
+                                print(f"X threshold reached: current={current_internal_mm:.2f}, target={target_internal_mm:.2f}")
+                                try:
+                                    self.xy.Xstop()
+                                except Exception:
+                                    pass
+                                break
+                        else:
+                            # Moving RIGHT (positive direction): stop when current >= target - threshold
+                            if current_internal_mm >= (target_internal_mm - threshold_mm):
+                                print(f"X threshold reached: current={current_internal_mm:.2f}, target={target_internal_mm:.2f}")
+                                try:
+                                    self.xy.Xstop()
+                                except Exception:
+                                    pass
+                                break
+                    except Exception as e:
+                        print(f"Threshold check error: {e}")
+
+                # Fallback: pulse-based stopping
                 with self.xy._count_lock:
                     pulses_moved = self.xy._pulse_count - start_pulse_count
 
                 if pulses_moved >= target_pulses:
                     try:
-                        self.xy.X_hold_running(duration=hold_after_limit)
+                        self.xy.Xstop()
                     except Exception:
                         pass
                     break
 
-                # Safety: stop if unexpected limit engages
+                # Safety: stop if limit switch engages (backup only)
                 if direction == "LEFT" and self.xy.CheckXlimit_neg():
+                    print("WARNING: X- limit hit during scan (should not happen with threshold)")
                     try:
-                        self.xy.X_hold_running(duration=hold_after_limit)
+                        self.xy.Xstop()
                     except Exception:
                         pass
                     return False
                 if direction == "RIGHT" and self.xy.CheckXlimit_pos():
+                    print("WARNING: X+ limit hit during scan (should not happen with threshold)")
                     try:
-                        self.xy.X_hold_running(duration=hold_after_limit)
+                        self.xy.Xstop()
                     except Exception:
                         pass
                     return False
@@ -1439,18 +1483,20 @@ class SimpleScanClass:
                         internal_x_mm = self.xy.get_position_x_mm()
                         
                         # Convert to corrected coordinate system for plotter
-                        # Internal: 0=home(right), negative=left
-                        # Corrected: 0=home(right), positive=left
                         corrected_x_mm = abs(internal_x_mm)
                         corrected_y_mm = abs(current_y_mm)
                         
-                        # Read sensor value
-                        z_value = read_sensor_value()
+                        # Calculate progress percentage (0-100) based on scan area
+                        progress_x = (corrected_x_mm / self.x_total_mm * 100.0) if self.x_total_mm > 0 else 0.0
+                        progress_y = (corrected_y_mm / self.y_total_mm * 100.0) if self.y_total_mm > 0 else 0.0
                         
-                        # Send data to plotter with corrected coordinates (phase 1 = buffer only)
-                        send_serial_data(corrected_x_mm, corrected_y_mm, z_value, phase=1)
+                        # Read sensor values (both channels)
+                        z_value, z_value2 = read_sensor_value()
                         
-                        print(f"Data: X={corrected_x_mm:.2f}, Y={corrected_y_mm:.2f}, Z={z_value:.6f}")
+                        # Send data to plotter with progress info (phase 1 = buffer only)
+                        send_serial_data(corrected_x_mm, corrected_y_mm, z_value, phase=1, z_value2=z_value2)
+                        
+                        print(f"Data: X={corrected_x_mm:.2f}mm ({progress_x:.1f}%), Y={corrected_y_mm:.2f}mm ({progress_y:.1f}%), Z={z_value:.6f}, Z2={z_value2:.6f}")
                     except Exception as e:
                         print(f"Data collection error: {e}")
 
@@ -1458,15 +1504,13 @@ class SimpleScanClass:
                 if self.gui and (now - last_ui >= 0.15):
                     last_ui = now
                     try:
-                        self.xy.update_position_x(direction_sign)
-                        pos_mm = self.xy.get_position_x_mm()
-                        # Show absolute value in GUI (corrected coordinate)
-                        self.gui.win.after(0, lambda p=abs(pos_mm):
+                        pos_mm = abs(self.xy.get_position_x_mm())
+                        self.gui.win.after(0, lambda p=pos_mm:
                             self.gui.jog_x_count_label.config(text=f"X (mm): {int(p)}"))
                     except Exception:
                         pass
 
-                sleep(0.001)
+                sleep(0.0001)  # Check more frequently for threshold
         finally:
             try:
                 self.xy.Xstop()
@@ -1730,7 +1774,7 @@ class SimpleScanClass:
                 except Exception:
                     pass
 
-    def scan_y_to_position_mm_corrected(self, target_mm, hold_after_limit=0.05, collect_data=False, current_x_mm=0.0):
+    def scan_y_to_position_mm_corrected(self, target_mm, hold_after_limit=0.05, collect_data=False, current_x_mm=0.0, use_threshold=True, threshold_mm=5.0, speed_multiplier=2.0):
         """
         Move Y axis to target position with CORRECTED coordinate system.
         
@@ -1743,6 +1787,9 @@ class SimpleScanClass:
         - Internal position tracking uses negative values when moving DOWN
         - But we report positive values to the plotter (abs value)
         - target_mm: 0.0 = top side (home), positive = bottom side
+        - use_threshold: if True, stop based on position threshold instead of limit switch
+        - threshold_mm: stop when within this distance of target (prevents hitting limits)
+        - speed_multiplier: multiply speed by this factor (e.g., 2.0 for 2x faster return movements)
         
         Returns True on success, False on abort/limit/EMG.
         """
@@ -1766,12 +1813,15 @@ class SimpleScanClass:
         if target_pulses <= 0:
             return True
 
+        # Apply speed multiplier for faster return movements (no data collection)
+        actual_speed = int(self.y_speed * speed_multiplier)
+        
         # Configure motor and start counting
         try:
             if direction == "DOWN":
-                self.xy.YmotorSet(0, self.y_speed)
+                self.xy.YmotorSet(0, actual_speed)
             else:
-                self.xy.YmotorSet(1, self.y_speed)
+                self.xy.YmotorSet(1, actual_speed)
             self.xy.Ystart()
         except Exception:
             pass
@@ -1791,26 +1841,57 @@ class SimpleScanClass:
                     SystemFuncClass().AllStop()
                     return False
 
+                # Check position-based threshold stopping (primary method)
+                if use_threshold:
+                    try:
+                        self.xy.update_position_y(direction_sign)
+                        current_internal_mm = self.xy.get_position_y_mm()
+                        
+                        # Check if we're within threshold of target
+                        if direction == "DOWN":
+                            # Moving DOWN (negative direction): stop when current <= target + threshold
+                            if current_internal_mm <= (target_internal_mm + threshold_mm):
+                                print(f"Y threshold reached: current={current_internal_mm:.2f}, target={target_internal_mm:.2f}")
+                                try:
+                                    self.xy.Ystop()
+                                except Exception:
+                                    pass
+                                break
+                        else:
+                            # Moving UP (positive direction): stop when current >= target - threshold
+                            if current_internal_mm >= (target_internal_mm - threshold_mm):
+                                print(f"Y threshold reached: current={current_internal_mm:.2f}, target={target_internal_mm:.2f}")
+                                try:
+                                    self.xy.Ystop()
+                                except Exception:
+                                    pass
+                                break
+                    except Exception as e:
+                        print(f"Threshold check error: {e}")
+
+                # Fallback: pulse-based stopping
                 with self.xy._count_lock:
                     pulses_moved = self.xy._pulse_count - start_pulse_count
 
                 if pulses_moved >= target_pulses:
                     try:
-                        self.xy.Y_hold_running(duration=hold_after_limit)
+                        self.xy.Ystop()
                     except Exception:
                         pass
                     break
 
-                # Safety: stop if unexpected limit engages
+                # Safety: stop if limit switch engages (backup only)
                 if direction == "DOWN" and self.xy.CheckYlimit_neg():
+                    print("WARNING: Y- limit hit during scan (should not happen with threshold)")
                     try:
-                        self.xy.Y_hold_running(duration=hold_after_limit)
+                        self.xy.Ystop()
                     except Exception:
                         pass
                     return False
                 if direction == "UP" and self.xy.CheckYlimit_pos():
+                    print("WARNING: Y+ limit hit during scan (should not happen with threshold)")
                     try:
-                        self.xy.Y_hold_running(duration=hold_after_limit)
+                        self.xy.Ystop()
                     except Exception:
                         pass
                     return False
@@ -1828,13 +1909,17 @@ class SimpleScanClass:
                         corrected_y_mm = abs(internal_y_mm)
                         corrected_x_mm = abs(current_x_mm)
                         
-                        # Read sensor value
-                        z_value = read_sensor_value()
+                        # Calculate progress percentage (0-100) based on scan area
+                        progress_x = (corrected_x_mm / self.x_total_mm * 100.0) if self.x_total_mm > 0 else 0.0
+                        progress_y = (corrected_y_mm / self.y_total_mm * 100.0) if self.y_total_mm > 0 else 0.0
                         
-                        # Send data to plotter with corrected coordinates
-                        send_serial_data(corrected_x_mm, corrected_y_mm, z_value, phase=2)  # Phase 2: plot data
+                        # Read sensor values (both channels)
+                        z_value, z_value2 = read_sensor_value()
                         
-                        print(f"Data: X={corrected_x_mm:.2f}, Y={corrected_y_mm:.2f}, Z={z_value:.6f}")
+                        # Send data to plotter with progress info
+                        send_serial_data(corrected_x_mm, corrected_y_mm, z_value, phase=2, z_value2=z_value2)  # Phase 2: plot data
+                        
+                        print(f"Data: X={corrected_x_mm:.2f}mm ({progress_x:.1f}%), Y={corrected_y_mm:.2f}mm ({progress_y:.1f}%), Z={z_value:.6f}, Z2={z_value2:.6f}")
                     except Exception as e:
                         print(f"Data collection error: {e}")
 
@@ -1842,14 +1927,13 @@ class SimpleScanClass:
                 if self.gui and (now - last_ui >= 0.15):
                     last_ui = now
                     try:
-                        self.xy.update_position_y(direction_sign)
-                        pos_mm = self.xy.get_position_y_mm()
-                        self.gui.win.after(0, lambda p=abs(pos_mm):
+                        pos_mm = abs(self.xy.get_position_y_mm())
+                        self.gui.win.after(0, lambda p=pos_mm:
                             self.gui.jog_y_count_label.config(text=f"Y (mm): {int(p)}"))
                     except Exception:
                         pass
 
-                sleep(0.001)
+                sleep(0.0001)  # Check more frequently for threshold
         finally:
             try:
                 self.xy.Ystop()
@@ -1867,7 +1951,7 @@ class SimpleScanClass:
 
         return True
 
-    def scan_up_until_threshold(self, threshold_mm=5.0, current_x_mm=0.0, hold_after_limit=0.05):
+    def scan_up_until_threshold(self, threshold_mm=5.0, current_x_mm=0.0, hold_after_limit=0.05, collect_data=True):
         """
         Scan UP until realtime Y position reaches near 0 (within threshold_mm).
         This prevents overshooting by monitoring the actual position during movement.
@@ -1876,10 +1960,11 @@ class SimpleScanClass:
             threshold_mm: Stop when abs(Y position) <= this value (default 2.0mm)
             current_x_mm: Current X position for data collection
             hold_after_limit: Hold time after stopping
+            collect_data: If True, collect sensor data during movement; if False, skip data collection
         
         Returns True on success, False on abort/EMG.
         """
-        print(f"Scanning UP until Y position <= {threshold_mm} mm (threshold-based)")
+        print(f"Scanning UP until Y position <= {threshold_mm} mm (threshold-based, data={'ON' if collect_data else 'OFF'})")
         
         try:
             self.xy.YmotorSet(1, self.y_speed)  # UP
@@ -1909,7 +1994,7 @@ class SimpleScanClass:
                     
                     # Stop when Y position reaches threshold (near home/0)
                     # Internal Y coordinates are negative when DOWN from home
-                    # Moving UP: -100mm ’ -50mm ’ -2mm ’ 0mm
+                    # Moving UP: -100mm  -50mm  -2mm  0mm
                     # Check: if current_y_internal >= -threshold_mm (e.g., -2mm or higher)
                     if current_y_internal >= -threshold_mm:
                         print(f"Threshold reached: Y internal = {current_y_internal:.2f} mm, abs = {current_y_abs:.2f} mm (stopping)")
@@ -1936,9 +2021,9 @@ class SimpleScanClass:
                         pass
                     break
                 
-                # Data collection during scan
+                # Data collection during scan (only if collect_data is True)
                 now = time.time()
-                if now - last_data_time >= data_interval:
+                if collect_data and (now - last_data_time >= data_interval):
                     last_data_time = now
                     try:
                         # Get current position
@@ -1948,13 +2033,13 @@ class SimpleScanClass:
                         corrected_y_mm = abs(internal_y_mm)
                         corrected_x_mm = abs(current_x_mm)
                         
-                        # Read sensor value
-                        z_value = read_sensor_value()
+                        # Read sensor values (both channels)
+                        z_value, z_value2 = read_sensor_value()
                         
                         # Send data to plotter
-                        send_serial_data(corrected_x_mm, corrected_y_mm, z_value, phase=2)  # Phase 2: plot data
+                        send_serial_data(corrected_x_mm, corrected_y_mm, z_value, phase=2, z_value2=z_value2)  # Phase 2: plot data
                         
-                        print(f"Data: X={corrected_x_mm:.2f}, Y={corrected_y_mm:.2f}, Z={z_value:.6f}")
+                        print(f"Data: X={corrected_x_mm:.2f}, Y={corrected_y_mm:.2f}, Z={z_value:.6f}, Z2={z_value2:.6f}")
                     except Exception as e:
                         print(f"Data collection error: {e}")
                 
@@ -1997,29 +2082,42 @@ class SimpleScanClass:
     
         PHASE 1 - HORIZONTAL SCANNING (MIGNEV7 PATTERN):
           - Y scan count = number of ROWS (how many times to move DOWN)
-          - Scans LEFT collecting data until X=180mm (realtime position)
-          - Returns RIGHT without data collection
+          - Scans LEFT collecting data until calibrated X limit (with threshold)
+          - Returns RIGHT without data collection (with threshold)
           - Moves DOWN to next row
           - Repeats pattern
+          - Progress: 0-100% based on position within calibrated area
     
         PHASE 2 - VERTICAL SCANNING:
           - Y scan count = number of COLUMNS (how many times to move LEFT)
-          - Scans full height (UP-DOWN) for each column
+          - Scans full height (UP-DOWN) for each column (with threshold)
           - Step size: Area X / Y count
+          - Progress: 0-100% based on position within calibrated area
         """
         print("=== START TWO-PHASE SCAN ===")
         print("COORDINATE SYSTEM: (0,0) = TOP-RIGHT corner")
         print("PHASE 1 PATTERN: Scan LEFT (data) -> Return RIGHT (no data) -> Move DOWN -> Repeat")
+        print("Using THRESHOLD-BASED stopping (no limit switch hits)")
     
         if not (self.y_count and self.y_count > 0):
             print("simple_scan: y_count not provided or invalid")
             return
     
-        # Calculate targets
-        left_target_mm = 180.0  # Fixed target: scan until X=180mm in realtime position
-        right_target_mm = 0.0   # Zero (right side, home position)
-        bottom_target_mm = self.y_total_mm  # Positive value (bottom side)
-        top_target_mm = 0.0                 # Zero (top side, home position)
+        # Define threshold distance from limits (mm) - prevents hitting physical limits
+        THRESHOLD_MM = 5.0
+        
+        # Speed multiplier for return movements (no data collection)
+        RETURN_SPEED_MULTIPLIER = 3.0  # 2x faster for return movements
+        
+        # Calculate targets dynamically from calibrated area (with threshold buffer)
+        # LEFT target: go to (area - threshold) to avoid hitting X- limit
+        left_target_mm = max(0, self.x_total_mm - THRESHOLD_MM)
+        # RIGHT target: return to threshold distance from home (avoid X+ limit)
+        right_target_mm = THRESHOLD_MM
+        # BOTTOM target: go to (area - threshold) to avoid hitting Y- limit
+        bottom_target_mm = max(0, self.y_total_mm - THRESHOLD_MM)
+        # TOP target: return to threshold distance from home (avoid Y+ limit)
+        top_target_mm = THRESHOLD_MM
     
         # PHASE 1: Y scan count = number of rows (DOWN movements)
         # Row step = Area Y / Y count (already calculated in self.row_step)
@@ -2035,7 +2133,9 @@ class SimpleScanClass:
         except Exception:
             phase2_column_step_mm = 0.0
     
-        print(f"Scan config: X range: {right_target_mm}-{left_target_mm} mm, Y range: {top_target_mm}-{bottom_target_mm} mm")
+        print(f"Scan config: X range: {right_target_mm:.1f}-{left_target_mm:.1f} mm, Y range: {top_target_mm:.1f}-{bottom_target_mm:.1f} mm")
+        print(f"Threshold buffer: {THRESHOLD_MM} mm from all limits")
+        print(f"Return speed multiplier: {RETURN_SPEED_MULTIPLIER}x (faster return movements)")
         print(f"PHASE 1: Y count = {self.y_count} rows, Y step = {phase1_y_step_mm:.2f} mm ({self.row_step} pulses)")
         print(f"PHASE 2: Y count = {self.y_count} columns, X step = {phase2_column_step_mm:.2f} mm ({self.column_step} pulses)")
     
@@ -2047,30 +2147,41 @@ class SimpleScanClass:
         # ========== PHASE 1: HORIZONTAL SCANNING (MIGNEV7 PATTERN) ==========
         print("\n=== PHASE 1: HORIZONTAL SCANNING (MIGNEV7 PATTERN) ===")
         print(f"Scanning {self.y_count + 1} horizontal rows")
-        print(f"Pattern: LEFT to X=180mm (data) -> RIGHT to X=0mm (no data) -> DOWN -> Repeat")
+        print(f"Pattern: LEFT to X={left_target_mm:.0f}mm (data, 1x speed) -> RIGHT to X={right_target_mm:.0f}mm (no data, {RETURN_SPEED_MULTIPLIER}x speed) -> DOWN -> Repeat")
         
         current_y_mm = 0.0
     
-        # Row 0: Initial LEFT scan from home (X=0, Y=0, top-right corner) with data collection
-        print("Row 0: LEFT scan from (0,0) to X=180mm (collecting data)")
-        ok = self.scan_x_to_position_mm_corrected(left_target_mm, collect_data=True, current_y_mm=current_y_mm)
+        # Row 0: Initial LEFT scan from home (X=threshold, Y=threshold, near top-right corner) with data collection
+        print(f"Row 0: LEFT scan from ({right_target_mm:.1f},{top_target_mm:.1f}) to X={left_target_mm:.1f}mm (collecting data, 1x speed)")
+        ok = self.scan_x_to_position_mm_corrected(left_target_mm, collect_data=True, current_y_mm=current_y_mm, 
+                                                   use_threshold=True, threshold_mm=THRESHOLD_MM, speed_multiplier=1.0)
         if not ok:
             print("simple_scan: initial LEFT pass aborted (limit/EMG/stop).")
             return
-    
-        # Return RIGHT without data collection
-        print("Row 0: RIGHT return to X=0mm (no data collection)")
-        ok = self.scan_x_to_position_mm_corrected(right_target_mm, collect_data=False, current_y_mm=current_y_mm)
+        time.sleep(0.5)
+
+        # Return RIGHT without data collection (FASTER)
+        print(f"Row 0: RIGHT return to X={right_target_mm:.1f}mm (no data, {RETURN_SPEED_MULTIPLIER}x speed)")
+        ok = self.scan_x_to_position_mm_corrected(right_target_mm, collect_data=False, current_y_mm=current_y_mm,
+                                                   use_threshold=True, threshold_mm=THRESHOLD_MM, speed_multiplier=RETURN_SPEED_MULTIPLIER)
         if not ok:
             print("simple_scan: return RIGHT pass aborted (limit/EMG/stop).")
             return
-    
+        
+        # Pause after completing row 0 cycle to protect motors/belts
+        print("Pausing 0.5s after row cycle...")
+        time.sleep(0.5)
+
         # Repeat for each Y-count: move down, scan left (data), return right (no data)
         for count in range(1, self.y_count + 1):
             if SystemFuncClass.stop_flag:
                 print("simple_scan: stop_flag set, aborting")
                 return
     
+            # Calculate progress percentage for this row
+            row_progress = (count / float(self.y_count)) * 100.0
+            print(f"\n=== Row {count}/{self.y_count} ({row_progress:.1f}% complete) ===")
+            
             # Move down by one row_step (calculated from Area Y / Y count)
             print(f"Row {count}: moving Y down by {self.row_step} pulses (~{phase1_y_step_mm:.2f} mm)")
             moved = self.move_y_down()
@@ -2084,21 +2195,28 @@ class SimpleScanClass:
             except Exception:
                 current_y_mm = count * phase1_y_step_mm
     
-            # Scan LEFT with data collection
-            print(f"Row {count}: LEFT scan to X=180mm (collecting data)")
-            ok = self.scan_x_to_position_mm_corrected(left_target_mm, collect_data=True, current_y_mm=current_y_mm)
+            # Scan LEFT with data collection (normal speed)
+            print(f"Row {count}: LEFT scan to X={left_target_mm:.1f}mm (collecting data, 1x speed)")
+            ok = self.scan_x_to_position_mm_corrected(left_target_mm, collect_data=True, current_y_mm=current_y_mm,
+                                                       use_threshold=True, threshold_mm=THRESHOLD_MM, speed_multiplier=1.0)
             if not ok:
                 print(f"simple_scan: LEFT scan aborted (limit/EMG/stop).")
                 break
+            time.sleep(0.5)
     
-            # Return RIGHT without data collection
-            print(f"Row {count}: RIGHT return to X=0mm (no data collection)")
-            ok = self.scan_x_to_position_mm_corrected(right_target_mm, collect_data=False, current_y_mm=current_y_mm)
+            # Return RIGHT without data collection (FASTER)
+            print(f"Row {count}: RIGHT return to X={right_target_mm:.1f}mm (no data, {RETURN_SPEED_MULTIPLIER}x speed)")
+            ok = self.scan_x_to_position_mm_corrected(right_target_mm, collect_data=False, current_y_mm=current_y_mm,
+                                                       use_threshold=True, threshold_mm=THRESHOLD_MM, speed_multiplier=RETURN_SPEED_MULTIPLIER)
             if not ok:
                 print(f"simple_scan: RIGHT return aborted (limit/EMG/stop).")
                 break
+            
+            # Pause after completing row cycle to protect motors/belts
+            print("Pausing 0.5s after row cycle...")
+            time.sleep(0.5)
     
-        print("=== PHASE 1 COMPLETE ===")
+        print("=== PHASE 1 COMPLETE (100%) ===")
     
         # HOME BEFORE PHASE 2 (detect X+ and Y+ to prevent overshooting)
         if SystemFuncClass.stop_flag:
@@ -2175,29 +2293,45 @@ class SimpleScanClass:
         
         print("Ready to start Phase 2")
     
-        # ========== PHASE 2: VERTICAL SCANNING (SIMPLIFIED - MATCHES PHASE 1 PATTERN) ==========
-        print(f"\n=== PHASE 2: VERTICAL SCANNING ===")
-        print(f"Scanning {self.y_count + 1} vertical columns (initial + Y count)")
+        # ========== PHASE 2: VERTICAL SCANNING (MATCHES PHASE 1 PATTERN) ==========
+        print(f"\n=== PHASE 2: VERTICAL SCANNING (MIGNEV7 PATTERN) ===")
+        print(f"Scanning {self.y_count + 1} vertical columns")
+        print(f"Pattern: DOWN to Y={bottom_target_mm:.0f}mm (data, 1x speed) -> UP to Y={top_target_mm:.0f}mm (no data, {RETURN_SPEED_MULTIPLIER}x speed) -> LEFT -> Repeat")
         print(f"Column step: {self.column_step} pulses (~{phase2_column_step_mm:.2f} mm)")
+        print("Using THRESHOLD-BASED stopping (no limit switch hits)")
         
         current_x_mm = 0.0  # Start from home position (0,0)
     
-        # Initial: Scan full height DOWN from home (0,0)
-        print(f"Column 0: DOWN scan from (0,0) (collecting data)")
-        ok = self.scan_y_to_position_mm_corrected(bottom_target_mm, collect_data=True, current_x_mm=current_x_mm)
+        # Column 0: Initial DOWN scan from home (X=threshold, Y=threshold, near top-right corner) with data collection
+        print(f"Column 0: DOWN scan from ({right_target_mm:.1f},{top_target_mm:.1f}) to Y={bottom_target_mm:.1f}mm (collecting data, 1x speed)")
+        ok = self.scan_y_to_position_mm_corrected(bottom_target_mm, collect_data=True, current_x_mm=current_x_mm,
+                                                   use_threshold=True, threshold_mm=THRESHOLD_MM, speed_multiplier=1.0)
         if not ok:
             print("simple_scan: initial DOWN pass aborted (limit/EMG/stop).")
             return
+        time.sleep(0.5)
+        # Return UP without data collection (FASTER)
+        print(f"Column 0: UP return to Y={top_target_mm:.1f}mm (no data, {RETURN_SPEED_MULTIPLIER}x speed)")
+        ok = self.scan_y_to_position_mm_corrected(top_target_mm, collect_data=False, current_x_mm=current_x_mm,
+                                                   use_threshold=True, threshold_mm=THRESHOLD_MM, speed_multiplier=RETURN_SPEED_MULTIPLIER)
+        if not ok:
+            print("simple_scan: return UP pass aborted (limit/EMG/stop).")
+            return
+        
+        # Pause after completing column 0 cycle to protect motors/belts
+        print("Pausing 0.5s after column cycle...")
+        time.sleep(0.5)
     
-        last_direction_y = "DOWN"
-    
-        # Loop Y count times: move left by column_step, then scan full height (alternating direction)
-        # This exactly mirrors Phase 1: move_y_down(row_step), then scan full width
+        # Repeat for each Y-count: move left, scan down (data), return up (no data)
         for count in range(1, self.y_count + 1):
             if SystemFuncClass.stop_flag:
                 print("simple_scan: stop_flag set, aborting Phase 2")
                 return
     
+            # Calculate progress percentage for this column
+            col_progress = (count / float(self.y_count)) * 100.0
+            print(f"\n=== Column {count}/{self.y_count} ({col_progress:.1f}% complete) ===")
+            
             # Move left by column_step (same as Phase 1 moves down by row_step)
             print(f"Column {count}: moving X left by {self.column_step} pulses (~{phase2_column_step_mm:.2f} mm)")
             moved = self.move_x_left(self.column_step)
@@ -2211,28 +2345,28 @@ class SimpleScanClass:
             except Exception:
                 current_x_mm = count * phase2_column_step_mm
             
-            # Alternate vertical direction - scan full height
-            next_direction_y = "UP" if last_direction_y == "DOWN" else "DOWN"
-            
-            # Use threshold-based stopping for UP (safe, no overshooting)
-            # Use bottom_target_mm for DOWN (safe, moving away from limits)
-            if next_direction_y == "UP":
-                # UP: Stop when realtime Y position reaches near home
-                # Keep 2mm threshold for safety, plotter will treat this as Y=0
-                print(f"Column {count}: vertical pass UP until Y position reaches ~-2 mm (threshold-based, collecting data)")
-                ok = self.scan_up_until_threshold(threshold_mm=5.0, current_x_mm=current_x_mm)
-            else:
-                target_y_mm = bottom_target_mm
-                print(f"Column {count}: vertical pass DOWN to {target_y_mm:.2f} mm (collecting data)")
-                ok = self.scan_y_to_position_mm_corrected(target_y_mm, collect_data=True, current_x_mm=current_x_mm)
-    
+            # Scan DOWN with data collection (normal speed)
+            print(f"Column {count}: DOWN scan to Y={bottom_target_mm:.1f}mm (collecting data, 1x speed)")
+            ok = self.scan_y_to_position_mm_corrected(bottom_target_mm, collect_data=True, current_x_mm=current_x_mm,
+                                                       use_threshold=True, threshold_mm=THRESHOLD_MM, speed_multiplier=1.0)
             if not ok:
-                print(f"simple_scan: vertical move aborted (limit/EMG/stop).")
+                print(f"simple_scan: DOWN scan aborted (limit/EMG/stop).")
                 break
+            time.sleep(0.5)
     
-            last_direction_y = next_direction_y
+            # Return UP without data collection (FASTER)
+            print(f"Column {count}: UP return to Y={top_target_mm:.1f}mm (no data, {RETURN_SPEED_MULTIPLIER}x speed)")
+            ok = self.scan_y_to_position_mm_corrected(top_target_mm, collect_data=False, current_x_mm=current_x_mm,
+                                                       use_threshold=True, threshold_mm=THRESHOLD_MM, speed_multiplier=RETURN_SPEED_MULTIPLIER)
+            if not ok:
+                print(f"simple_scan: UP return aborted (limit/EMG/stop).")
+                break
+            
+            # Pause after completing column cycle to protect motors/belts
+            print("Pausing 0.5s after column cycle...")
+            time.sleep(0.5)
     
-        print("=== PHASE 2 COMPLETE ===")
+        print("=== PHASE 2 COMPLETE (100%) ===")
     
         # Send end marker to plotter
         try:
@@ -2255,7 +2389,12 @@ class SimpleScanClass:
             except Exception:
                 pass
     
+        # Pause to protect motors and belts from sudden stop
+        print("Pausing 0.5 seconds to protect motors and belts...")
+        time.sleep(0.5)
+    
         print("=== TWO-PHASE SCAN COMPLETE ===")
+
 
 
 
@@ -2537,13 +2676,13 @@ class GUIClass(PortDefineClass):
                                    font=self.labelFont, bg='#0046ad', fg='white')
         self.jog_label.place(x=530, y=220)
         
-        self.btn_up = tk.Button(self.win, text="‘‘‘‘", font=TkFont.Font(size=20), bg='lightgreen', width=2, height=1)
+        self.btn_up = tk.Button(self.win, text="↑", font=TkFont.Font(size=20), bg='lightgreen', width=2, height=1)
         self.btn_up.place(x=600, y=250)
-        self.btn_left = tk.Button(self.win, text="ђђ", font=TkFont.Font(size=20), bg='lightgreen', width=2, height=1)
+        self.btn_left = tk.Button(self.win, text="←", font=TkFont.Font(size=20), bg='lightgreen', width=2, height=1)
         self.btn_left.place(x=530, y=295)
-        self.btn_right = tk.Button(self.win, text="’’’", font=TkFont.Font(size=20), bg='lightgreen', width=2, height=1)
+        self.btn_right = tk.Button(self.win, text="→", font=TkFont.Font(size=20), bg='lightgreen', width=2, height=1)
         self.btn_right.place(x=670, y=295)
-        self.btn_down = tk.Button(self.win, text="“““", font=TkFont.Font(size=20), bg='lightgreen', width=2, height=1)
+        self.btn_down = tk.Button(self.win, text="↓", font=TkFont.Font(size=20), bg='lightgreen', width=2, height=1)
         self.btn_down.place(x=600, y=340)
 
         # Bind press/release for press-and-hold jog behavior (PWM-based)
@@ -3987,4 +4126,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
 

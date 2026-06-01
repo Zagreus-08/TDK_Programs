@@ -379,6 +379,7 @@ def check_serial_timeout():
 def read_loop():
     global raw_file, csv_writer, current_filename, scan_active, last_data_time, pause_live, x_range, y_max, zmin, zmax
     global scan_area_x, scan_area_y, scan_count_x, scan_count_y, frozen_x_range, frozen_y_max
+    global x, y, z, z2  # CRITICAL: Declare data buffers as global to prevent local shadowing
     data_cnt = 0
     filename_from_serial = ""
     base_filename = ""  # Store base filename
