@@ -2,33 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 Scan system for long loop - Auto-start version (Fullscreen + Toggleable Controls)
-Ver 3.3-unlimited   2025-01-15  (Unlimited continuous data saving)
+Ver 0.9R-stable11   2025-11-03  (X/Y auto-sync, X-Lim controls removed)
 
 FEATURES:
 - Auto-detects scan dimensions from hardware (X: 50-300, Y: auto-detected)
-- Saves ALL raw CSV data continuously to a SINGLE file
-- Saves x, y, z, z2 (4 columns only)
-- NO DATA LIMITS - saves EVERYTHING until new scan starts
-- NO AUTOMATIC FILE CLOSURE - file stays open until:
-  * New scan starts (0,0 marker received)
-  * User manually stops program
-  * Serial connection is lost
+- Saves raw CSV data for all scan sizes
 - Auto-saves PNG at end of scan
 - Loads and displays any size raw data (50x50 to 300x300)
 - Maintains square 2D display with proper axis scaling
 - X/Y now auto-sync: whichever axis expands, the other follows
-- COORDINATE SYSTEM: Scanner sends (0,0) at TOP-RIGHT corner
-  * Scanner hardware: X increases LEFT, Y increases DOWN from top-right
-  * Display: X-axis inverted to show (0,0) at TOP-LEFT corner
-  * Y-axis: Direct mapping (0 at top, max at bottom)
-
-CHANGES IN Ver 3.3:
-- Completely removed phase detection logic
-- CSV format simplified to: x, y, z, z2 (4 columns)
-- All data saved continuously without any phase tracking
-- REMOVED automatic end-of-scan detection and file closure
-- File only closes when new scan starts or program stops
-- This ensures NO DATA IS LOST even if scanner sends extra points
+- X-Lim manual buttons and label removed
 """
 
 import copy
@@ -48,6 +31,9 @@ import threading
 import serial
 import time
 import tkinter as tk
+import shutil
+import tempfile
+import subprocess
 from tkinter import messagebox, filedialog, ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 try:
@@ -97,64 +83,23 @@ def save_timezone_preference(timezone_name):
         print(f"[INFO] Saved timezone preference: {timezone_name}")
     except Exception as e:
         print(f"[ERROR] Failed to save timezone preference: {e}")
-# ---------------- Global vars ----------------
-# Timezone configuration
-current_timezone = tz_from_name('UTC')  # Default timezone
-
-def load_timezone_preference():
-    """Load saved timezone preference from file"""
-    global current_timezone
-    try:
-        with open('/home/pi/Desktop/migne/timezone.txt', 'r') as f:
-            saved_tz = f.read().strip()
-            current_timezone = tz_from_name(saved_tz)
-            print(f"[INFO] Loaded timezone preference: {saved_tz}")
-            return saved_tz
-    except Exception as e:
-        print(f"[INFO] No saved timezone preference, using UTC: {e}")
-        return 'UTC'
-
-def save_timezone_preference(timezone_name):
-    """Save timezone preference to file"""
-    try:
-        os.makedirs('/home/pi/Desktop/migne', exist_ok=True)
-        with open('/home/pi/Desktop/migne/timezone.txt', 'w') as f:
-            f.write(timezone_name)
-        print(f"[INFO] Saved timezone preference: {timezone_name}")
-    except Exception as e:
-        print(f"[ERROR] Failed to save timezone preference: {e}")
-x, y, z, z2 = [], [], [], []  # Added z2 buffer for second sensor data
-zmin, zmax = -0.5, 0.5
-
-# FIXED DISPLAY RANGE: Always 920x920mm regardless of actual scan size
-FIXED_DISPLAY_X = 700  # Fixed X-axis display range in mm
-FIXED_DISPLAY_Y = 700  # Fixed Y-axis display range in mm
-
-x_range = FIXED_DISPLAY_X  # Fixed at 920mm
-y_max = FIXED_DISPLAY_Y    # Fixed at 920mm
-
-# Scan metadata from scanner (area dimensions and counts)
-scan_area_x = 700  # Actual scan area X in mm (from scanner)
-scan_area_y = 700  # Actual scan area Y in mm (from scanner)
-scan_count_x = 0   # X scan count (0 = not specified)
-scan_count_y = 0   # Y scan count
-
-# Frozen display range (locked after scan completes)
-frozen_x_range = None  # Set when scan ends to prevent axis expansion
-frozen_y_max = None    # Set when scan ends to prevent axis expansion
-
+x, y, z = [], [], []
+zmin, zmax = -0.1, 0.1
+x_range = 100  # Default X-axis range (50-300)
+y_max = 100    # Auto-detected Y-axis maximum from hardware
 raw_file = None
 csv_writer = None
 current_filename = None
 loaded_filename = None   # Track filename of loaded raw data for saving
+loaded_fullpath = None   # Track full path of loaded raw CSV (for copying to USB)
 pause_live = False       # used when user loads a CSV and wants to pause live updates
 scan_active = True       # True while an active scan is happening; becomes False after end-of-scan (100,100)
 last_data_time = time.time()  # Track when we last received serial data
 
 # Z-range lock feature
 z_range_locked = False   # Toggle for lock mode
-locked_zmin = -0.5       # Stored locked values
-locked_zmax = 0.5
+locked_zmin = -0.1       # Stored locked values
+locked_zmax = 0.1
 
 # Loaded data cache for re-rendering with adjusted Z-range
 loaded_data_cache = None
@@ -163,8 +108,8 @@ loaded_data_cache = None
 # Try multiple paths for Migne image (Raspberry Pi and Windows)
 possible_image_paths = [
     '/home/pi/Desktop/Migne_black_frameless.png',  # Raspberry Pi
-    os.path.join(os.path.expanduser('~'), ''),  # Windows Downloads
-    os.path.join(os.path.dirname(__file__), ''),  # Same directory as script
+    os.path.join(os.path.expanduser('~'), 'Downloads', 'Migne_black_frameless.png'),  # Windows Downloads
+    os.path.join(os.path.dirname(__file__), 'Migne_black_frameless.png'),  # Same directory as script
 ]
 
 im_Migne = None
@@ -184,50 +129,26 @@ if im_Migne is None:
 
 # ---------------- Serial ----------------
 try:
-    # Try common Raspberry Pi and Windows serial ports
+    # Try common Raspberry Pi serial ports first
     import glob
-    import serial.tools.list_ports
-    
-    # Priority list of ports to try
-    possible_ports = ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1", "COM7", "COM6", "COM3", "COM8", "COM4"]
+    possible_ports = ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1", "COM7", "COM6"]
     ser = None
 
-    # First, try the priority list
     for port in possible_ports:
         try:
             ser = serial.Serial(port, 115200, timeout=1)
-            print(f"✓ Connected to serial port: {port} at 115200 baud")
-            print(f"  Waiting for data from Mini XY Scanner...")
+            print(f"Connected to serial port: {port}")
             break
         except (serial.SerialException, FileNotFoundError):
             continue
 
-    # If priority list failed, try auto-detection
     if ser is None:
-        print("Priority ports not found. Attempting auto-detection...")
-        detected_ports = serial.tools.list_ports.comports()
-        for port_info in detected_ports:
-            port = port_info.device
-            print(f"  Trying: {port} ({port_info.description})")
-            try:
-                ser = serial.Serial(port, 115200, timeout=1)
-                print(f"✓ Connected to serial port: {port}")
-                print(f"  Device: {port_info.description}")
-                break
-            except (serial.SerialException, PermissionError):
-                continue
-
-    # Last resort: try any /dev/tty* port on Linux
-    if ser is None:
+        # If no port found, try to find any available port
         available_ports = glob.glob('/dev/tty[A-Za-z]*')
         for port in available_ports:
-            # Skip some known non-serial ports
-            if any(skip in port for skip in ['/dev/tty', '/dev/ttyprintk']):
-                if not any(valid in port for valid in ['USB', 'ACM', 'AMA', 'S']):
-                    continue
             try:
                 ser = serial.Serial(port, 115200, timeout=1)
-                print(f"✓ Connected to serial port: {port}")
+                print(f"Connected to serial port: {port}")
                 break
             except (serial.SerialException, PermissionError):
                 continue
@@ -237,16 +158,8 @@ except Exception as e:
     ser = None
 
 if ser is None:
-    print("⚠ Warning: No serial port available. Running in demo mode.")
-    print("  - You can still load and view saved CSV files")
-    print("  - Live scanning from Mini XY Scanner will not work")
-    print("  - To enable serial: Connect USB-to-TTL adapter and restart")
+    print("Warning: No serial port available. Running in demo mode.")
     # Don't exit, allow program to run without serial connection
-else:
-    print("━" * 60)
-    print("READY TO RECEIVE DATA")
-    print("Start the Mini XY Scanner and press SCAN to begin")
-    print("━" * 60)
 
 # ---------------- Save figures ----------------
 def save_figure_direct(filename):
@@ -278,52 +191,26 @@ def save_figure_direct(filename):
 
 # ---------------- Raw Data Handling ----------------
 def start_new_raw_file(name_hint=""):
-    """Start a new CSV for saving live scan data - saves ALL data continuously"""
+    """Start a new CSV for saving live scan data"""
     global raw_file, csv_writer, current_filename
     if not name_hint:
         # Use simple sequential naming if no hint provided
         name_hint = "scan_data"
 
-    # Try multiple possible paths for raw_data directory (Raspberry Pi and Windows)
-    possible_paths = [
-        r'c:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\MIni XY Scanner\raw_data',  # Windows - specific path (try first)
-        '/home/pi/Shared/raw_data',  # Raspberry Pi
-        os.path.join(os.path.dirname(__file__), 'raw_data'),  # Same directory as script
-    ]
-
-    raw_dir = None
-    for path in possible_paths:
-        try:
-            os.makedirs(path, exist_ok=True)
-            raw_dir = path
-            print(f"[INFO] Using raw_data directory: {raw_dir}")
-            break
-        except Exception as e:
-            print(f"[DEBUG] Failed to create {path}: {e}")
-            continue
-
-    if raw_dir is None:
-        # Fallback to current directory
-        raw_dir = os.path.join(os.getcwd(), 'raw_data')
-        os.makedirs(raw_dir, exist_ok=True)
-        print(f"[INFO] Using fallback raw_data directory: {raw_dir}")
-
+    raw_dir = '/home/pi/Shared/raw_data'
+    os.makedirs(raw_dir, exist_ok=True)
     raw_path = os.path.join(raw_dir, f"{name_hint}.csv")
 
     try:
         raw_file = open(raw_path, "w", newline="")
         csv_writer = csv.writer(raw_file)
-        # Simplified header: x, y, z, z2 only (no phase)
-        csv_writer.writerow(["x", "y", "z", "z2"])
+        csv_writer.writerow(["x", "y", "z"])
         current_filename = raw_path
         print(f"[INFO] Started raw data file: {raw_path}")
-        print(f"[INFO] Will save ALL incoming data continuously until scan stops")
     except Exception as e:
         print(f"[ERROR] Could not create raw file: {e}")
         raw_file = None
         csv_writer = None
-
-# Phase detection removed - no longer needed
 
 # ---------------- Button state control ----------------
 def set_controls_state(state):
@@ -378,11 +265,8 @@ def check_serial_timeout():
 # ---------------- Serial loop ----------------
 def read_loop():
     global raw_file, csv_writer, current_filename, scan_active, last_data_time, pause_live, x_range, y_max, zmin, zmax
-    global scan_area_x, scan_area_y, scan_count_x, scan_count_y, frozen_x_range, frozen_y_max
-    global x, y, z, z2  # CRITICAL: Declare data buffers as global to prevent local shadowing
     data_cnt = 0
     filename_from_serial = ""
-    base_filename = ""  # Store base filename
 
     while True:
         if ser is None:
@@ -396,66 +280,27 @@ def read_loop():
             continue
 
         try:
-            line = rcv_data.decode("ascii", errors="ignore").strip()
-            
-            # Debug: log every received line
-            if data_cnt % 50 == 0:  # Log every 50 lines to avoid spam
-                print(f"[SERIAL] Received line {data_cnt}: {line[:50]}...")
-            
-            # Check for metadata message (META,area_x,area_y,x_count,y_count)
-            if line.startswith("META,"):
-                parts = line.split(",")
-                if len(parts) >= 5:
-                    try:
-                        scan_area_x = float(parts[1])
-                        scan_area_y = float(parts[2])
-                        scan_count_x = int(parts[3])
-                        scan_count_y = int(parts[4])
-                        
-                        print(f"[INFO] Received scan metadata: {scan_area_x}x{scan_area_y}mm, X={scan_count_x}, Y={scan_count_y}")
-                        
-                    except Exception as e:
-                        print(f"[ERROR] Failed to parse metadata: {e}")
-                continue
-            
-            # Parse regular data (x,y,z,phase,z2)
-            # Scanner format: x,y,z,phase,z2 (5 fields)
-            parts = line.split(",")
-            if len(parts) < 3:
-                print(f"data error @count={data_cnt}: insufficient fields")
-                continue
-                
+            parts = rcv_data.decode("ascii", errors="ignore").strip().split(",")
             x0 = float(parts[0])
             y0 = float(parts[1])
             z0 = float(parts[2])
-            
-            # Parse phase if present (parts[3])
-            phase = int(parts[3]) if len(parts) >= 4 else 1
-            
-            # Parse z2 (data2) from parts[4] if present, otherwise default to 0
-            z2_value = float(parts[4]) if len(parts) >= 5 else 0.0
 
             # Update last data received time
             last_data_time = time.time()
 
-        except (ValueError, IndexError) as e:
-            print(f"data error @count={data_cnt}: {e}")
+        except (ValueError, IndexError):
+            print("data error @count=", data_cnt)
             continue
 
         # ---------- Auto-resume live scan when data received while paused ----------
         if pause_live:
             print("[INFO] Serial data received while viewing loaded data. Auto-resuming live scan.")
-            pause_live = False      
+            pause_live = False
             x.clear()
             y.clear()
             z.clear()
-            z2.clear()  # Clear z2 buffer as well
             scan_active = True
             filename_from_serial = ""
-            base_filename = ""
-            # Reset frozen ranges for new scan
-            frozen_x_range = None
-            frozen_y_max = None
             # Reset plot to blank and disable buttons
             root.after(0, lambda: (resume_live(), set_controls_state("disabled")))
 
@@ -466,40 +311,31 @@ def read_loop():
             # Close previous scan's raw file if it exists
             if raw_file:
                 try:
-                    raw_file.flush()  # Ensure all data is written
                     raw_file.close()
                     print(f"[INFO] Closed previous raw file: {current_filename}")
-                    print(f"[INFO] Total data points saved in previous scan: {data_cnt}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to close previous raw file: {e}")
+                except Exception:
+                    pass
 
             # CRITICAL: Clear ALL buffers for new scan
             x.clear()
             y.clear()
             z.clear()
-            z2.clear()  # Clear z2 buffer as well
 
             # Reset variables for new scan
             raw_file = None
             csv_writer = None
             current_filename = None
             filename_from_serial = ""
-            base_filename = ""
             scan_active = True
             data_cnt = 0  # Reset data counter for new scan
 
-            # Reset frozen ranges for new scan
-            frozen_x_range = None
-            frozen_y_max = None
-
-            # FIXED: Display range is always 920x920mm
-            print("[INFO] Display range FIXED at 700x700mm")
-            y_max = FIXED_DISPLAY_Y
-            x_range = FIXED_DISPLAY_X
+            # Reset y_max and x_range for new scan
+            y_max = 100
+            x_range = 100
             
             # Reset zmin/zmax for new scan to default values (unless locked)
             if not z_range_locked:
-                zmin, zmax = -0.5, 0.5
+                zmin, zmax = -0.1, 0.1
                 print(f"[INFO] Reset color bar range to zmin={zmin}, zmax={zmax}")
             else:
                 print(f"[INFO] Z-range locked at zmin={locked_zmin}, zmax={locked_zmax}")
@@ -510,8 +346,8 @@ def read_loop():
             # Detect filename sent by 1st program (should come with or after 0,0)
             if len(parts) >= 4:
                 filename_from_serial = parts[3].strip()
-                base_filename = filename_from_serial  # Store base filename
-                print(f"[INFO] Started new scan with base filename: {base_filename}")
+                start_new_raw_file(filename_from_serial)
+                print(f"[INFO] Started new scan with filename: {filename_from_serial}")
             
             # Skip adding the (0,0) marker to the data buffers
             continue
@@ -519,23 +355,26 @@ def read_loop():
         # Detect filename if it comes after (0,0) - backup detection
         elif len(parts) >= 4 and not filename_from_serial and scan_active:
             filename_from_serial = parts[3].strip()
-            base_filename = filename_from_serial
-            print(f"[INFO] Detected base filename: {base_filename}")
+            start_new_raw_file(filename_from_serial)
+            print(f"[INFO] Started raw file with filename: {filename_from_serial}")
 
-        # ---------- Create single CSV file for ALL data ----------
-        # Create file on first data point if it doesn't exist yet
-        if scan_active and csv_writer is None and data_cnt > 0:
-            print(f"[INFO] Creating single CSV file for ALL scan data")
-            
-            # Create ONE file for the entire scan
-            if base_filename:
-                start_new_raw_file(base_filename)
-            else:
-                start_new_raw_file("scan_data")
+        # Auto-detect X and Y axis maximums from incoming data
+        if x0 > 0 and x0 <= 300:  # Reasonable range check for X
+            detected_x_max = max(x0, x_range if x_range > 100 else 100)
+            # Auto-adjust x_range during live scan (round to nearest 50)
+            new_x_range = max(50, min(300, ((int(detected_x_max) + 49) // 50) * 50))
+            if new_x_range != x_range:
+                x_range = new_x_range
+                # sync with y_max to keep square scaling
+                max_range = max(x_range, y_max)
+                x_range = y_max = max_range
+                print(f"[INFO] Auto-adjusted x_range to: {x_range} (synced y_max)")
 
-        # FIXED: Display range is always 920x920mm - no dynamic adjustment needed
-        # Data will be scaled to fit within the fixed 920x920mm display
-        # Skip the dynamic range adjustment code entirely
+        if y0 > 0 and y0 <= 300:  # Reasonable range check for Y
+            y_max = max(y_max, y0)
+            # sync with x_range to keep square scaling
+            max_range = max(x_range, y_max)
+            x_range = y_max = max_range
 
         data_cnt += 1
 
@@ -543,41 +382,75 @@ def read_loop():
         x.append(x0)
         y.append(y0)
         z.append(z0)
-        z2.append(z2_value)  # Store z2 data in buffer for potential display/analysis
 
-        # Write ALL data to CSV file (skip only the 0,0 marker)
-        # NO LIMITS - save everything until scan stops
+        # Write data to CSV file (skip the 0,0 marker)
         if csv_writer and not (x0 == 0 and y0 == 0):
             try:
-                # Save ALL data exactly as received: x, y, z, z2
-                csv_writer.writerow([x0, y0, z0, z2_value])
-                # Flush every 100 rows to ensure data is saved (increased from 50 for better performance)
+                csv_writer.writerow([x0, y0, z0])
+                # Flush every 100 rows to ensure data is saved
                 if data_cnt % 100 == 0:
                     raw_file.flush()
-                    print(f"[CSV] Saved {data_cnt} rows: X={x0:.2f}, Y={y0:.2f}, Z={z0:.6f}, Z2={z2_value:.6f}")
             except Exception as e:
-                print(f"[ERROR] Failed to write CSV row at data_cnt={data_cnt}: {e}")
-                print(f"[ERROR] csv_writer={csv_writer}, raw_file={raw_file}")
-        elif not csv_writer and scan_active and not (x0 == 0 and y0 == 0):
-            print(f"[WARNING] csv_writer is None at data_cnt={data_cnt}, X={x0:.2f}, Y={y0:.2f}")
-            print(f"[WARNING] scan_active={scan_active}, base_filename={base_filename}")
+                print(f"[ERROR] Failed to write CSV row: {e}")
 
-        # REMOVED: Buffer trimming during scan - keep all data for complete display
-        # Old code was: if len(x) > 1500 and x0 == 3 and y0 >= 5: del x[0:-309]
-        # This was causing incomplete plots by removing data during scanning
+        if len(x) > 1500 and x0 == 3 and y0 >= 5:
+            del x[0:-309]
+            del y[0:-309]
+            del z[0:-309]
 
-        # ---------- End of scan detection (DISABLED - save continuously) ----------
-        # NOTE: End of scan detection is DISABLED to ensure ALL data is saved
-        # The file will only close when:
-        # 1. User manually stops the program
-        # 2. Serial connection is lost
-        # 3. A new scan starts (0,0 marker received)
-        # This ensures no data is lost even if the scanner sends extra points
-        
-        # Keep the file open and continue saving ALL incoming data
-        # No automatic file closure based on position detection
+        # ---------- End of scan ----------
+        # Detect end of scan: hardware sends matching max values (e.g., 100,100 or 200,200)
+        # Check if both x0 and y0 are at their detected maximums (within tolerance)
+        # Only trigger if we have enough data points (avoid false positives)
+        if scan_active and data_cnt > 50 and ((abs(x0 - x_range) <= 1 and abs(y0 - y_max) <= 1) or (x0 == y0 and x0 >= 100 and x0 == y_max)):
+            print(f"[INFO] End of scan detected at ({x0},{y0}). Finalizing scan...")
+            
+            try:
+                if filename_from_serial:
+                    # Use same path logic as load_raw_data function
+                    possible_paths = [
+                        '/home/pi/Shared'
+                    ]
 
-        # NO DATA LIMIT - continue saving until scan naturally ends or serial connection closes
+                    save_dir = os.getcwd()  # Default fallback
+
+                    # Find the first existing path
+                    for path in possible_paths:
+                        if os.path.exists(path):
+                            save_dir = path
+                            break
+
+                    save_path = os.path.join(save_dir, filename_from_serial + ".png")
+                    print(f"[INFO] Scan complete, attempting to save to: {save_path}")
+                    # Save directly in main thread using root.after to ensure thread safety
+                    root.after(0, lambda: save_figure_direct(save_path))
+            except Exception as e:
+                print("[ERROR] Could not save image:", e)
+
+            if raw_file:
+                try:
+                    raw_file.flush()  # Ensure all data is written
+                    raw_file.close()
+                    print(f"[INFO] Raw data saved successfully: {current_filename}")
+                    print(f"[INFO] Total data points saved: {data_cnt}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to close raw file: {e}")
+                raw_file = None
+                csv_writer = None
+
+            # Mark scan as complete and reset for next scan
+            scan_active = False
+            filename_from_serial = ""
+            
+            # Re-enable Load/Resume buttons after scan finishes
+            print("[INFO] Re-enabling buttons after scan completion")
+            root.after(0, lambda: set_controls_state("normal"))
+            
+            # Reset last_data_time to trigger timeout mechanism
+            last_data_time = time.time()
+
+        if data_cnt >= 6000000:
+            break
 
 # ---------------- Initialize blank plot ----------------
 def initialize_blank_plot():
@@ -586,18 +459,23 @@ def initialize_blank_plot():
     axh.cla()
     axm.cla()  # Clear the image subplot as well
 
-    # FIXED: Always use 920x920mm display range
-    x_range = FIXED_DISPLAY_X
-    y_max = FIXED_DISPLAY_Y
+    # Ensure x_range / y_max are synced to keep square
+    max_range = max(x_range, y_max)
+    x_range = y_max = max_range
 
     ax.grid(True, linestyle="--", alpha=0.7)
+    ax.set_xticks(np.arange(0, x_range + 1, max(10, int(x_range / 5))))
+    ax.set_yticks(np.arange(0, 101, 20))
     ax.set_facecolor("white")
 
     axh.grid(True, linestyle="-", alpha=0.7)
+    axh.set_xticks(np.arange(0, x_range + 1, max(10, int(x_range / 5))))
+    axh.set_yticks(np.arange(0, 101, 25))
+    axh.set_zticks(np.arange(-0.4, 0.41, 0.2))
     axh.set_facecolor("none")
 
-    ax.set_xlabel("x (mm)")
-    ax.set_ylabel("y (mm)")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
     ax.set_xlim([0, 100])  # Display coordinates always 0-100
     ax.set_ylim([0, 100])
 
@@ -607,21 +485,19 @@ def initialize_blank_plot():
     except Exception:
         pass
 
-    # Adjust ticks to show FIXED 920mm range (BOTH AXES INVERTED)
+    # Adjust ticks to show x_range and y_max
     ax.set_xticks(np.linspace(0, 100, 6))
-    # X-axis labels: 920 at left (0 display), 0 at right (100 display)
-    ax.set_xticklabels([str(int(np.round((100-i) * FIXED_DISPLAY_X / 100))) for i in np.linspace(0, 100, 6)])
+    ax.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
     axh.set_xticks(np.linspace(0, 100, 6))
-    axh.set_xticklabels([str(int(np.round((100-i) * FIXED_DISPLAY_X / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
 
-    # Set Y-axis tick labels (INVERTED: 920 at top, 0 at bottom)
+    # Set Y-axis tick labels to show actual y_max values
     ax.set_yticks(np.linspace(0, 100, 6))
-    # Y-axis labels: 920 at top (0 display), 0 at bottom (100 display)
-    ax.set_yticklabels([str(int(np.round((100-i) * FIXED_DISPLAY_Y / 100))) for i in np.linspace(0, 100, 6)])
+    ax.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
     axh.set_yticks(np.linspace(0, 100, 6))
-    axh.set_yticklabels([str(int(np.round((100-i) * FIXED_DISPLAY_Y / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
 
-    ax.set_title("Foreign object detection (920x920mm)", fontsize=12, color=(0.2, 0.2, 0.2), pad=30)
+    ax.set_title("Foreign object detection", fontsize=12, color=(0.2, 0.2, 0.2), pad=30)
     axh.set_title("Foreign object detection (3D)", fontsize=12, color=(0.2, 0.2, 0.2), pad=10)
 
     axh.view_init(elev=20, azim=300)
@@ -631,9 +507,9 @@ def initialize_blank_plot():
     except AttributeError:
         pass  # Older matplotlib versions don't have this method
 
-    axh.set_xlabel("x (mm)")
-    axh.set_ylabel("y (mm)")
-    axh.set_zlabel("output (voltage)")
+    axh.set_xlabel("x")
+    axh.set_ylabel("y")
+    axh.set_zlabel("output")
     axh.set_xlim([0, 100])  # Display coordinates always 0-100
     axh.set_ylim([0, 100])
     
@@ -651,8 +527,6 @@ def initialize_blank_plot():
 def update(i, xt, yt, zt, zmin_arg, zmax_arg):
     # note: name zmin/zmax in args to prevent shadowing globals accidentally
     global ax, axh, axm, cax, x_range, current_filename, y_max, zmin, zmax
-    global scan_area_x, scan_area_y, scan_count_x, scan_count_y, frozen_x_range, frozen_y_max
-    
     # Allow updates when paused (for loaded data) or when we have data
     if pause_live or len(x) < 2:
         return
@@ -665,21 +539,20 @@ def update(i, xt, yt, zt, zmin_arg, zmax_arg):
             xs = xs[diff:]
             ys = ys[diff:]
 
-    # FIXED: Always use 920x920mm display range
-    display_x_range = FIXED_DISPLAY_X
-    display_y_max = FIXED_DISPLAY_Y
+    # Filter and scale data based on x_range (zoom/crop feature)
+    # Only show data where X <= x_range (filter for any x_range value)
+    mask = [xi <= x_range for xi in xs]
+    xs = [xs[i] for i in range(len(xs)) if mask[i]]
+    ys = [ys[i] for i in range(len(ys)) if mask[i]]
+    zs = [zs[i] for i in range(len(zs)) if mask[i]]
 
-    # Scale incoming data to fill the entire 920x920mm display
-    # The actual scan is 190x190mm, but we stretch it to fill 920x920mm display
-    # Scanner sends: (0,0) at top-right, X increases left, Y increases down
-    # Display wants: (0,0) at top-left, X increases right, Y increases down
-    # Invert X axis (right to left) AND invert Y axis (bottom to top)
-    
-    # Scale from actual scan area (190mm) to full display (920mm), then to 0-100 range
-    # This makes the 190mm scan fill the entire 920mm display
-    scale_factor = display_x_range / scan_area_x  # 920/190 = 4.84x stretch
-    xs = [100 - (xi * scale_factor * 100 / display_x_range) for xi in xs]  # Invert X: right becomes left
-    ys = [100 - (yi * scale_factor * 100 / display_y_max) for yi in ys]  # Invert Y: bottom becomes top
+    # Keep x_range and y_max synced before scaling
+    max_range = max(x_range, y_max)
+    x_range = y_max = max_range
+
+    # Scale X and Y coordinates to fit in 0-100 display range
+    xs = [xi * 100 / x_range for xi in xs]
+    ys = [yi * 100 / y_max for yi in ys]
 
     if len(xs) < 2 or len(np.unique(xs)) < 2 or len(np.unique(ys)) < 2:
         return
@@ -746,65 +619,45 @@ def update(i, xt, yt, zt, zmin_arg, zmax_arg):
     if display_name:
         axm.text(0.5, -0.1, display_name, transform=axm.transAxes,
                 ha='center', va='top', fontsize=10, color='black', weight='bold')
-    
-    # Display scan coverage info if available
-    if scan_count_x > 0 or scan_count_y > 0:
-        coverage_text = "Scan Coverage: "
-        if scan_count_x > 0:
-            coverage_text += f"X={scan_count_x}/100 "
-        if scan_count_y > 0:
-            coverage_text += f"Y={scan_count_y}/21"
-        axm.text(0.5, -0.2, coverage_text, transform=axm.transAxes,
-                ha='center', va='top', fontsize=9, color='blue', weight='normal')
 
     axh.text2D(0.70, 0.95, f"Z Max: {z_max:.6f}", transform=axh.transAxes)
     axh.text2D(0.70, 0.90, f"Z Min: {z_min:.6f}", transform=axh.transAxes)
 
-    # Set axis limits - ALWAYS 0-100 to keep SQUARE display
+    # Set axis limits - ALWAYS 0-100 to keep display square in coordinates
     axh.set_xlim([0, 100])
-    axh.set_ylim([0, 100])
-    # For 3D Z-axis, use locked range if enabled, otherwise use actual data range
-    if z_range_locked:
-        axh.set_zlim([locked_zmin, locked_zmax])
-    else:
-        display_zmin = min(z_min, zmin)
-        display_zmax = max(z_max, zmax)
-        axh.set_zlim([display_zmin, display_zmax])
+    # For 3D Z-axis, use actual data range for display (not locked range)
+    # This prevents the 3D plot from extending too far
+    display_zmin = min(z_min, zmin) if not z_range_locked else z_min
+    display_zmax = max(z_max, zmax) if not z_range_locked else z_max
+    axh.set_zlim([display_zmin, display_zmax])
     ax.set_xlim([0, 100])
     ax.set_ylim([0, 100])
 
-    # Force equal aspect on 2D plot to maintain SQUARE
+    # Force equal aspect on 2D plot
     try:
         ax.set_aspect('equal', adjustable='box')
     except Exception:
         pass
 
-    # Adjust ticks to show display ranges in mm (BOTH AXES INVERTED)
-    # FIXED: Always show 920mm range
-    label_x_range = FIXED_DISPLAY_X
-    label_y_max = FIXED_DISPLAY_Y
-    
+    # Adjust ticks to show x_range and y_max
+    tick_spacing = max(10, int(x_range / 5))
     ax.set_xticks(np.linspace(0, 100, 6))
-    # X-axis labels: 920 at left (0 display), 0 at right (100 display)
-    ax.set_xticklabels([str(int(np.round((100-i) * label_x_range / 100))) for i in np.linspace(0, 100, 6)])
+    ax.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
     axh.set_xticks(np.linspace(0, 100, 6))
-    axh.set_xticklabels([str(int(np.round((100-i) * label_x_range / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
 
-    # Y-axis labels: 920 at top (0 display), 0 at bottom (100 display)
+    # Set Y-axis tick labels to show actual y_max values
     ax.set_yticks(np.linspace(0, 100, 6))
-    ax.set_yticklabels([str(int(np.round((100-i) * label_y_max / 100))) for i in np.linspace(0, 100, 6)])
+    ax.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
     axh.set_yticks(np.linspace(0, 100, 6))
-    axh.set_yticklabels([str(int(np.round((100-i) * label_y_max / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
 
     axh.set_facecolor((0.9, 0.9, 0.9))
-    axh.set_xlabel("x (mm)", fontsize=10, labelpad=8)
-    axh.set_ylabel("y (mm)", fontsize=10, labelpad=8)
-    axh.set_zlabel("output (voltage)", fontsize=10, labelpad=8)
-    
-    ax.set_xlabel("x (mm)", fontsize=10)
-    ax.set_ylabel("y (mm)", fontsize=10)
+    axh.set_xlabel("x")
+    axh.set_ylabel("y")
+    axh.set_zlabel("output")
 
-    ax.set_title("Foreign object detection (700x700mm)", fontsize=12, color=(0.2, 0.2, 0.2), pad=30)
+    ax.set_title("Foreign object detection", fontsize=12, color=(0.2, 0.2, 0.2), pad=30)
     axh.set_title("Foreign object detection (3D)", fontsize=12, color=(0.2, 0.2, 0.2), pad=10)
 
     # Draw canvas to update display
@@ -815,14 +668,12 @@ def update(i, xt, yt, zt, zmin_arg, zmax_arg):
 
 # ---------------- Load Raw CSV ----------------
 def load_raw_data():
-    global pause_live, loaded_filename
+    global pause_live, loaded_filename, loaded_fullpath
     pause_live = True
 
-    # Set initial directory - try multiple possible paths for Raspberry Pi and Windows
+    # Set initial directory - try multiple possible paths for Raspberry Pi
     possible_paths = [
-        r'c:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\MIni XY Scanner\raw_data',  # Windows - specific path (try first)
-        '/home/pi/Shared/raw_data',  # Raspberry Pi
-        os.path.join(os.path.dirname(__file__), 'raw_data'),  # Same directory as script
+        '/home/pi/Shared/raw_data'
     ]
 
     raw_dir = os.getcwd()  # Default fallback
@@ -834,14 +685,7 @@ def load_raw_data():
             print(f"[INFO] Using raw data directory: {raw_dir}")
             break
     else:
-        # If none exist, try to create the Windows path first
-        try:
-            os.makedirs(possible_paths[0], exist_ok=True)
-            raw_dir = possible_paths[0]
-            print(f"[INFO] Created and using raw data directory: {raw_dir}")
-        except Exception as e:
-            print(f"[WARNING] Could not create preferred directory: {e}")
-            print(f"[WARNING] Using fallback directory: {raw_dir}")
+        print(f"[WARNING] No raw data directory found, using: {raw_dir}")
 
     # Create custom file dialog for better Raspberry Pi experience
     dialog = tk.Toplevel(root)
@@ -1069,6 +913,8 @@ def load_raw_data():
     
     tk.Button(btn_frame, text="Select", command=on_select, font=("Arial", 11, "bold"),
              bg="#4CAF50", fg="white", width=12, height=2).pack(side=tk.LEFT, padx=5)
+    tk.Button(btn_frame, text="Save to USB", command=do_save_to_usb, font=("Arial", 11, "bold"),
+             bg="#2196F3", fg="white", width=12, height=2).pack(side=tk.LEFT, padx=5)
     tk.Button(btn_frame, text="Cancel", command=on_cancel, font=("Arial", 11, "bold"),
              bg="#f44336", fg="white", width=12, height=2).pack(side=tk.RIGHT, padx=5)
     
@@ -1083,26 +929,16 @@ def load_raw_data():
     try:
         # Extract filename without extension for saving
         loaded_filename = os.path.splitext(os.path.basename(file_path))[0]
+        # Store full path so we can copy original file to USB if requested
+        loaded_fullpath = file_path
         # Remove "raw_" prefix if present
         if loaded_filename.startswith("raw_"):
             loaded_filename = loaded_filename[4:]
 
         data = np.loadtxt(file_path, delimiter=",", skiprows=1)
-        
-        # Handle both old format (x,y,z) and new format (x,y,z,z2)
-        if data.shape[1] >= 3:
-            xs, ys, zs = data[:, 0], data[:, 1], data[:, 2]
-            # Optionally extract z2 if present (for future use)
-            if data.shape[1] >= 4:
-                z2s = data[:, 3]
-                print(f"[INFO] Loaded file with z2 data: {loaded_filename}")
-            else:
-                print(f"[INFO] Loaded file (legacy format): {loaded_filename}")
-        else:
-            raise ValueError("CSV file must have at least 3 columns (x, y, z)")
-            
+        xs, ys, zs = data[:, 0], data[:, 1], data[:, 2]
         show_loaded(xs, ys, zs)
-        print(f"[INFO] Loaded {len(xs)} data points from: {loaded_filename}")
+        print(f"[INFO] Loaded file: {loaded_filename}")
     except Exception as e:
         messagebox.showerror("Error", f"Failed to load file:\n{e}")
         pause_live = False
@@ -1115,49 +951,41 @@ def show_loaded(xs, ys, zs):
         messagebox.showerror("Error", "Loaded CSV has no data.")
         return
 
-    # FIXED: Always use 920x920mm display range
-    x_range = FIXED_DISPLAY_X
-    y_max = FIXED_DISPLAY_Y
+    # Auto-detect X and Y axis maximums from loaded data
+    detected_x_max = int(np.max(xs)) if len(xs) > 0 else 100
+    detected_y_max = int(np.max(ys)) if len(ys) > 0 else 100
 
-    print(f"[INFO] Display fixed at {x_range}x{y_max}mm (920x920mm)")
+    # Auto-adjust x_range to match loaded data (round to nearest 50)
+    x_range = max(50, min(300, ((detected_x_max + 49) // 50) * 50))
+    y_max = detected_y_max
 
-    # Detect actual scan area from loaded data
-    detected_x_max = np.max(xs) if len(xs) > 0 else 190
-    detected_y_max = np.max(ys) if len(ys) > 0 else 190
-    
-    # Use detected scan area or default to 190mm
-    actual_scan_x = detected_x_max if detected_x_max > 0 else 190
-    actual_scan_y = detected_y_max if detected_y_max > 0 else 190
-    
-    print(f"[INFO] Detected scan area: {actual_scan_x}x{actual_scan_y}mm")
+    # Sync X and Y so they match the larger dimension (keep square)
+    max_range = max(x_range, y_max)
+    x_range = y_max = max_range
 
-    # Store ORIGINAL data before scaling (for re-rendering when Z-range changes)
-    original_xs = xs.copy()
-    original_ys = ys.copy()
-    original_zs = zs.copy()
+    print(f"[INFO] Detected X-max: {detected_x_max}, adjusted x_range to: {x_range}")
+    print(f"[INFO] Detected Y-max: {detected_y_max}, synced y_max to: {y_max}")
 
-    # Scale loaded data to fill the entire 920x920mm display
-    # The actual scan might be 190x190mm, but we stretch it to fill 920x920mm display
-    # Scanner sends: (0,0) at top-right, X increases left, Y increases down
-    # Display wants: (0,0) at top-left, X increases right, Y increases down
-    # Invert X axis (right to left) AND invert Y axis (bottom to top)
-    
-    scale_factor_x = x_range / actual_scan_x  # e.g., 920/190 = 4.84x stretch
-    scale_factor_y = y_max / actual_scan_y
-    xs = 100 - (xs * scale_factor_x * 100 / x_range)  # Invert X: right becomes left
-    ys = 100 - (ys * scale_factor_y * 100 / y_max)  # Invert Y: bottom becomes top
+    # Filter and scale data based on x_range (zoom/crop feature)
+    # Only show data where X <= x_range (filter for any x_range value)
+    mask = xs <= x_range
+    xs = xs[mask]
+    ys = ys[mask]
+    zs = zs[mask]
+
+    # Scale X and Y coordinates to fit in 0-100 display range
+    xs = xs * 100 / x_range
+    ys = ys * 100 / y_max
 
     # Store actual data range for indicators
-    actual_data_zmin = np.min(original_zs)
-    actual_data_zmax = np.max(original_zs)
+    actual_data_zmin = np.min(zs)
+    actual_data_zmax = np.max(zs)
 
     # Cache the loaded data for re-rendering when Z-range is adjusted
     loaded_data_cache = {
-        'original_xs': original_xs,  # Store ORIGINAL unscaled data
-        'original_ys': original_ys,
         'xs': xs.copy(),
         'ys': ys.copy(),
-        'zs': original_zs.copy(),
+        'zs': zs.copy(),
         'actual_zmin': actual_data_zmin,
         'actual_zmax': actual_data_zmax
     }
@@ -1216,13 +1044,10 @@ def show_loaded(xs, ys, zs):
     # Set axis limits - ALWAYS 0-100 to keep square coordinates
     axh.set_xlim([0, 100])
     axh.set_ylim([0, 100])
-    # For 3D Z-axis in loaded data, use locked range if enabled, otherwise use actual data range
-    if z_range_locked:
-        axh.set_zlim([locked_zmin, locked_zmax])
-    else:
-        display_zmin = np.min(zs)
-        display_zmax = np.max(zs)
-        axh.set_zlim([display_zmin, display_zmax])
+    # For 3D Z-axis in loaded data, use actual data range for display
+    display_zmin = np.min(zs) if z_range_locked else zmin
+    display_zmax = np.max(zs) if z_range_locked else zmax
+    axh.set_zlim([display_zmin, display_zmax])
     ax.set_xlim([0, 100])
     ax.set_ylim([0, 100])
 
@@ -1232,21 +1057,16 @@ def show_loaded(xs, ys, zs):
     except Exception:
         pass
 
-    # Adjust ticks to show FIXED 920mm range (BOTH AXES INVERTED)
-    display_x_range = FIXED_DISPLAY_X
-    display_y_max = FIXED_DISPLAY_Y
-    
+    # Adjust ticks to show x_range and y_max
     ax.set_xticks(np.linspace(0, 100, 6))
-    # X-axis labels: 920 at left (0 display), 0 at right (100 display)
-    ax.set_xticklabels([str(int(np.round((100-i) * display_x_range / 100))) for i in np.linspace(0, 100, 6)])
+    ax.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
     axh.set_xticks(np.linspace(0, 100, 6))
-    axh.set_xticklabels([str(int(np.round((100-i) * display_x_range / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_xticklabels([str(int(np.round(i * x_range / 100))) for i in np.linspace(0, 100, 6)])
 
-    # Y-axis labels: 920 at top (0 display), 0 at bottom (100 display)
     ax.set_yticks(np.linspace(0, 100, 6))
-    ax.set_yticklabels([str(int(np.round((100-i) * display_y_max / 100))) for i in np.linspace(0, 100, 6)])
+    ax.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
     axh.set_yticks(np.linspace(0, 100, 6))
-    axh.set_yticklabels([str(int(np.round((100-i) * display_y_max / 100))) for i in np.linspace(0, 100, 6)])
+    axh.set_yticklabels([str(int(np.round(i * y_max / 100))) for i in np.linspace(0, 100, 6)])
 
     # Display Z min/max values on the 3D plot (ALWAYS show actual data values)
     axh.text2D(0.70, 0.95, f"Z Max: {actual_data_zmax:.6f}", transform=axh.transAxes)
@@ -1264,21 +1084,17 @@ def show_loaded(xs, ys, zs):
     except AttributeError:
         pass  # Older matplotlib versions might not have these properties
 
-    axh.set_xlabel("x (mm)", fontsize=10, labelpad=8)
-    axh.set_ylabel("y (mm)", fontsize=10, labelpad=8)
-    axh.set_zlabel("output (voltage)", fontsize=10, labelpad=8)
-    
-    ax.set_xlabel("x (mm)", fontsize=10)
-    ax.set_ylabel("y (mm)", fontsize=10)
+    axh.set_xlabel("x")
+    axh.set_ylabel("y")
+    axh.set_zlabel("output")
 
-    ax.set_title("Loaded Raw Data (2D) - 700x700mm", fontsize=12, pad=30)
+    ax.set_title("Loaded Raw Data (2D)", fontsize=12, pad=30)
     axh.set_title("Loaded Raw Data (3D)", fontsize=12, pad=10)
     canvas.draw()
 
 def resume_live():
     """Reset the plot to blank display and clear all data"""
-    global pause_live, x, y, z, z2, zmin, zmax, ax, axh, axm, cax, loaded_filename, loaded_data_cache
-    global frozen_x_range, frozen_y_max
+    global pause_live, x, y, z, zmin, zmax, ax, axh, axm, cax, loaded_filename, loaded_data_cache
     pause_live = False
     loaded_filename = None  # Clear loaded filename when resuming live
     loaded_data_cache = None  # Clear loaded data cache
@@ -1286,14 +1102,9 @@ def resume_live():
     x.clear()
     y.clear()
     z.clear()
-    z2.clear()  # Clear z2 buffer as well
     # ALWAYS reset z-axis limits to default for clean display
     # Even if locked, the display should show -0.1 to 0.1 for blank plot
-    zmin, zmax = -0.5, 0.5
-    
-    # Reset frozen ranges for new scan
-    frozen_x_range = None
-    frozen_y_max = None
+    zmin, zmax = -0.1, 0.1
     
     # If locked, keep the locked values but display will use default until data comes in
     if z_range_locked:
@@ -1318,7 +1129,7 @@ if __name__ == '__main__':
     th_ser.start()
 
     root = tk.Tk()
-    root.title("Ver3.3_Migne_Realtime_Plotter - Simplified Continuous Saving")
+    root.title("Ver1.3_Migne_Realtime_Plotter")
     root.configure(bg="#e5e5e5")
     root.attributes("-fullscreen", True)
     root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
@@ -1336,14 +1147,14 @@ if __name__ == '__main__':
     controls_frame.grid(row=0, column=1, sticky="ns")
     controls_frame.grid_remove()
 
-    fig = plt.Figure(figsize=[14, 7], facecolor=(0.9, 0.9, 0.9))
+    fig = plt.Figure(figsize=[13, 6], facecolor=(0.9, 0.9, 0.9))
     spec = gridspec.GridSpec(ncols=2, nrows=2, width_ratios=[5, 5], height_ratios=[1, 12.5], figure=fig)
     ax = fig.add_subplot(spec[1:, 0])
     axh = fig.add_subplot(spec[1:, 1], projection="3d")
     axm = fig.add_subplot(spec[0, 0:])
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.5)
-    fig.subplots_adjust(left=0.06, right=0.94, bottom=0.08, top=0.94, hspace=0.20, wspace=0.30)
+    fig.subplots_adjust(left=0.08, right=0.92, bottom=0.08, top=0.92, hspace=0.25, wspace=0.25)
     initialize_blank_plot()
 
     canvas = FigureCanvasTkAgg(fig, master=plot_frame)
@@ -1496,9 +1307,7 @@ if __name__ == '__main__':
 
             # Determine save directory
             possible_paths = [
-                r'c:\Users\a493353\Desktop\Lans Galos\Raspberry Pi Program\MIni XY Scanner',  # Windows - specific path (try first)
-                '/home/pi/Shared',  # Raspberry Pi
-                os.path.dirname(__file__),  # Same directory as script
+                '/home/pi/Shared'
             ]
 
             save_dir = os.getcwd()  # Default fallback
@@ -1542,6 +1351,323 @@ if __name__ == '__main__':
                     pass
 
         safe_action(custom_save)
+    def do_save_to_usb():
+        """Open dialog to select raw CSV and image, then choose USB folder to copy files to."""
+        def open_dialog():
+            global loaded_fullpath, loaded_data_cache
+
+            # Possible source directories to search for CSV/PNG
+            source_dirs = ['/home/pi/Shared/raw_data', '/home/pi/Shared', os.getcwd()]
+            src_dir = next((d for d in source_dirs if os.path.exists(d)), os.getcwd())
+
+            dialog = tk.Toplevel(root)
+            dialog.title("Save to USB - Select Files")
+            # Use same size as Load Raw dialog for consistency on Pi touchscreen
+            dialog.geometry("700x550")
+            dialog.transient(root)
+            dialog.grab_set()
+            # Center the dialog like Load Raw dialog
+            dialog.update_idletasks()
+            sx = (dialog.winfo_screenwidth() // 2) - (700 // 2)
+            sy = (dialog.winfo_screenheight() // 2) - (550 // 2)
+            dialog.geometry(f"700x550+{sx}+{sy}")
+            dialog.configure(bg="#e5e5e5")
+
+            # Use consistent fonts with Load Raw dialog
+            lbl_font = ("Arial", 11, "bold")
+            btn_font = ("Arial", 11, "bold")
+            cb_font = ("Arial", 10)
+
+            # Left column: stacked CSV (top) and PNG (bottom). Right column: USB targets and actions
+            left_col = tk.Frame(dialog)
+            left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+            csv_frame = tk.Frame(left_col)
+            csv_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+            png_frame = tk.Frame(left_col)
+            png_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+            # Determine screen size (use dialog's screen) and set right column width
+            sw = dialog.winfo_screenwidth()
+            sh = dialog.winfo_screenheight()
+            w = 700
+            right_w = 120 if sw <= 1024 else max(180, int(w * 0.18))
+            right_frame = tk.Frame(dialog, width=right_w)
+            # On very small screens, place USB targets below the lists to conserve width
+            if sw <= 1024 or sh <= 600:
+                # stack vertically: left_col fills top, right_frame goes below
+                left_col.pack_configure(side=tk.TOP, fill=tk.BOTH, expand=True)
+                right_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=6)
+            else:
+                right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=6, pady=6)
+            right_frame.pack_propagate(False)
+
+            # CSV list as scrollable checkboxes (top)
+            tk.Label(csv_frame, text="Raw CSV Files", font=lbl_font).pack(anchor="w")
+            csv_canvas = tk.Canvas(csv_frame)
+            csv_scroll = tk.Scrollbar(csv_frame, command=csv_canvas.yview)
+            csv_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            csv_canvas.pack(fill=tk.BOTH, expand=True)
+            csv_checks_frame = tk.Frame(csv_canvas)
+            csv_canvas.create_window((0, 0), window=csv_checks_frame, anchor='nw')
+            csv_canvas.config(yscrollcommand=csv_scroll.set)
+
+            # PNG list as scrollable checkboxes (bottom)
+            tk.Label(png_frame, text="Image Files (PNG)", font=lbl_font).pack(anchor="w")
+            png_canvas = tk.Canvas(png_frame)
+            png_scroll = tk.Scrollbar(png_frame, command=png_canvas.yview)
+            png_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            png_canvas.pack(fill=tk.BOTH, expand=True)
+            png_checks_frame = tk.Frame(png_canvas)
+            png_canvas.create_window((0, 0), window=png_checks_frame, anchor='nw')
+            png_canvas.config(yscrollcommand=png_scroll.set)
+
+            # Dictionaries to hold checkbutton variables
+            csv_vars = {}
+            png_vars = {}
+
+            def _on_canvas_config(event, canvas=csv_canvas):
+                canvas.configure(scrollregion=canvas.bbox('all'))
+            def _on_canvas_config_png(event, canvas=png_canvas):
+                canvas.configure(scrollregion=canvas.bbox('all'))
+            csv_checks_frame.bind('<Configure>', _on_canvas_config)
+            png_checks_frame.bind('<Configure>', _on_canvas_config_png)
+
+            # Select/Clear buttons
+            csv_btns = tk.Frame(csv_frame)
+            csv_btns.pack(fill=tk.X)
+            def csv_select_all():
+                for v in csv_vars.values():
+                    v.set(True)
+            def csv_clear_all():
+                for v in csv_vars.values():
+                    v.set(False)
+            tk.Button(csv_btns, text="Select All", command=csv_select_all, width=10, font=btn_font).pack(side=tk.LEFT, padx=4, pady=2)
+            tk.Button(csv_btns, text="Clear All", command=csv_clear_all, width=10, font=btn_font).pack(side=tk.LEFT, padx=4, pady=2)
+
+            png_btns = tk.Frame(png_frame)
+            png_btns.pack(fill=tk.X)
+            def png_select_all():
+                for v in png_vars.values():
+                    v.set(True)
+            def png_clear_all():
+                for v in png_vars.values():
+                    v.set(False)
+            tk.Button(png_btns, text="Select All", command=png_select_all, width=10, font=btn_font).pack(side=tk.LEFT, padx=4, pady=2)
+            tk.Button(png_btns, text="Clear All", command=png_clear_all, width=10, font=btn_font).pack(side=tk.LEFT, padx=4, pady=2)
+
+            # USB mounts list
+            tk.Label(right_frame, text="USB Targets (/media/pi)", font=("Arial", 11, "bold")).pack(anchor="w")
+            usb_listbox = tk.Listbox(right_frame, selectmode=tk.SINGLE, font=("Courier", 10))
+            usb_listbox.pack(fill=tk.BOTH, expand=True)
+            usb_scroll = tk.Scrollbar(right_frame, command=usb_listbox.yview)
+            usb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            usb_listbox.config(yscrollcommand=usb_scroll.set)
+
+            # Populate file lists
+            def populate_files(directory):
+                # Clear existing
+                for w in csv_checks_frame.winfo_children():
+                    w.destroy()
+                for w in png_checks_frame.winfo_children():
+                    w.destroy()
+                csv_vars.clear()
+                png_vars.clear()
+                try:
+                    files = os.listdir(directory)
+                except Exception:
+                    files = []
+                for f in sorted(files, reverse=True):
+                    if f.lower().endswith('.csv'):
+                        var = tk.BooleanVar(value=False)
+                        cb = tk.Checkbutton(csv_checks_frame, text=f, variable=var, anchor='w', font=cb_font)
+                        cb.pack(anchor='w', fill=tk.X)
+                        csv_vars[f] = var
+                    if f.lower().endswith('.png'):
+                        var = tk.BooleanVar(value=False)
+                        cb = tk.Checkbutton(png_checks_frame, text=f, variable=var, anchor='w', font=cb_font)
+                        cb.pack(anchor='w', fill=tk.X)
+                        png_vars[f] = var
+
+            # Populate USB mounts
+            def populate_usb():
+                usb_listbox.delete(0, tk.END)
+                base = '/media/pi'
+                if not os.path.exists(base):
+                    return
+                try:
+                    entries = [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))]
+                    # Include base itself as option
+                    usb_listbox.insert(tk.END, '.')
+                    for e in entries:
+                        usb_listbox.insert(tk.END, e)
+                except Exception:
+                    pass
+
+            # Directory label and change button
+            dir_var = tk.StringVar(value=src_dir)
+            dir_frame = tk.Frame(right_frame)
+            dir_frame.pack(fill=tk.X, padx=8)
+            tk.Label(dir_frame, textvariable=dir_var, font=cb_font).pack(side=tk.LEFT, padx=4)
+            def change_dir():
+                d = filedialog.askdirectory(initialdir=dir_var.get())
+                if d:
+                    dir_var.set(d)
+                    populate_files(d)
+            tk.Button(dir_frame, text="Change Source Folder", command=change_dir, font=btn_font).pack(side=tk.RIGHT)
+
+            populate_files(src_dir)
+            populate_usb()
+
+            # Preselect loaded file if present
+            if loaded_fullpath:
+                lf = os.path.basename(loaded_fullpath)
+                try:
+                    if lf in csv_vars:
+                        csv_vars[lf].set(True)
+                except Exception:
+                    pass
+
+            # Action buttons - place inside right column so they fit beside USB list
+            btns = tk.Frame(right_frame)
+            btns.pack(fill=tk.X, padx=4, pady=6)
+
+            def do_copy():
+                sel_usb = None
+                s3 = usb_listbox.curselection()
+                if s3:
+                    sel = usb_listbox.get(s3[0])
+                    if sel == '.':
+                        sel_usb = '/media/pi'
+                    else:
+                        sel_usb = os.path.join('/media/pi', sel)
+
+                if not sel_usb or not os.path.exists(sel_usb):
+                    messagebox.showerror("No USB", "Please select a valid USB target folder on the right.")
+                    return
+
+                copied = []
+                try:
+                    # CSVs selected via checkboxes
+                    for fname, var in csv_vars.items():
+                        if var.get():
+                            src = os.path.join(dir_var.get(), fname)
+                            if os.path.exists(src):
+                                dst = os.path.join(sel_usb, os.path.basename(src))
+                                shutil.copy2(src, dst)
+                                copied.append(dst)
+
+                    # PNGs selected via checkboxes
+                    for fname, var in png_vars.items():
+                        if var.get():
+                            src = os.path.join(dir_var.get(), fname)
+                            if os.path.exists(src):
+                                dst = os.path.join(sel_usb, os.path.basename(src))
+                                shutil.copy2(src, dst)
+                                copied.append(dst)
+                except Exception as e:
+                    messagebox.showerror("Copy Error", f"Failed to copy:\n{e}")
+                    return
+
+                if copied:
+                    messagebox.showinfo("Done", "Copied files:\n" + "\n".join(copied))
+                else:
+                    messagebox.showwarning("Nothing", "No files selected to copy.")
+                dialog.destroy()
+
+            def do_cancel():
+                dialog.destroy()
+
+            def do_eject_selected():
+                # Eject/unmount the selected USB target from the right listbox
+                s3 = usb_listbox.curselection()
+                if not s3:
+                    messagebox.showwarning("No Selection", "Please select a USB target on the right to eject.")
+                    return
+                sel = usb_listbox.get(s3[0])
+                target = '/media/pi' if sel == '.' else os.path.join('/media/pi', sel)
+                if not os.path.exists(target):
+                    messagebox.showerror("Not Found", f"Target does not exist:\n{target}")
+                    return
+                if not messagebox.askyesno("Confirm Eject", f"Unmount {target}?\n(Ensure copy finished)"):
+                    return
+                try:
+                    subprocess.run(['sudo', 'umount', target], check=True)
+                    messagebox.showinfo("Ejected", f"Successfully unmounted:\n{target}")
+                    # Refresh USB list
+                    populate_usb()
+                except subprocess.CalledProcessError as e:
+                    messagebox.showerror("Unmount Failed", f"Failed to unmount:\n{e}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Error unmounting:\n{e}")
+
+            tk.Button(btns, text="Transfer to USB", command=do_copy, bg="#4CAF50", fg="white", font=("Arial", 10, "bold"), width=14).pack(pady=2)
+            tk.Button(btns, text="Eject USB", command=do_eject_selected, bg="#ff9800", fg="white", font=("Arial", 10, "bold"), width=14).pack(pady=2)
+            tk.Button(btns, text="Cancel", command=do_cancel, bg="#f44336", fg="white", font=("Arial", 10, "bold"), width=14).pack(pady=2)
+
+            dialog.wait_window()
+
+        safe_action(open_dialog)
+
+    def do_eject_usb():
+        """Unmount a selected USB mount under /media/pi."""
+        def open_eject_dialog():
+            base = '/media/pi'
+            if not os.path.exists(base):
+                messagebox.showerror("No USB", f"No USB mount point found: {base}")
+                return
+
+            dialog = tk.Toplevel(root)
+            dialog.title("Eject USB")
+            dialog.geometry("400x300")
+            dialog.transient(root)
+            dialog.grab_set()
+
+            tk.Label(dialog, text="Select USB target to unmount:", font=("Arial", 11, "bold")).pack(anchor="w", padx=8, pady=6)
+            listbox = tk.Listbox(dialog, selectmode=tk.SINGLE, font=("Courier", 10))
+            listbox.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+
+            # Populate with '.' (base) and subfolders
+            listbox.insert(tk.END, '.')
+            try:
+                for d in sorted(os.listdir(base)):
+                    p = os.path.join(base, d)
+                    if os.path.isdir(p):
+                        listbox.insert(tk.END, d)
+            except Exception:
+                pass
+
+            def do_unmount():
+                sel = listbox.curselection()
+                if not sel:
+                    messagebox.showwarning("No Selection", "Please select a target to unmount.")
+                    return
+                name = listbox.get(sel[0])
+                target = base if name == '.' else os.path.join(base, name)
+                if not os.path.exists(target):
+                    messagebox.showerror("Not Found", f"Target does not exist:\n{target}")
+                    return
+                if not messagebox.askyesno("Confirm Unmount", f"Unmount {target}?\n(Use with care)"):
+                    return
+                try:
+                    # Attempt to unmount (may require sudo)
+                    subprocess.run(['sudo', 'umount', target], check=True)
+                    messagebox.showinfo("Unmounted", f"Successfully unmounted:\n{target}")
+                except subprocess.CalledProcessError as e:
+                    messagebox.showerror("Unmount Failed", f"Failed to unmount:\n{e}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Error unmounting:\n{e}")
+                dialog.destroy()
+
+            btn_frame = tk.Frame(dialog)
+            btn_frame.pack(fill=tk.X, padx=8, pady=8)
+            tk.Button(btn_frame, text="Unmount", command=do_unmount, bg="#f44336", fg="white", font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=6)
+            tk.Button(btn_frame, text="Cancel", command=dialog.destroy, bg="#cccccc", font=("Arial", 11)).pack(side=tk.RIGHT, padx=6)
+
+            dialog.wait_window()
+
+        safe_action(open_eject_dialog)
     def do_reboot():
         if messagebox.askyesno("Reboot", "Reboot the system?"):
             os.system("sudo reboot")
@@ -1721,12 +1847,7 @@ if __name__ == '__main__':
                 # If viewing loaded data, re-render with new Z-range
                 if pause_live and loaded_data_cache is not None:
                     print("[INFO] Re-rendering loaded data with adjusted Z-range")
-                    # Use the cached ORIGINAL data (before scaling) to re-render
-                    # This prevents double-inversion of coordinates
-                    original_xs = loaded_data_cache['original_xs']
-                    original_ys = loaded_data_cache['original_ys']
-                    original_zs = loaded_data_cache['zs']
-                    show_loaded(original_xs, original_ys, original_zs)
+                    show_loaded(loaded_data_cache['xs'], loaded_data_cache['ys'], loaded_data_cache['zs'])
                 
                 dialog.destroy()
             except ValueError:
