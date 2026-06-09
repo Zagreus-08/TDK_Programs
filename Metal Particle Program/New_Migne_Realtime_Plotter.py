@@ -690,16 +690,19 @@ def load_raw_data():
     # Create custom file dialog for better Raspberry Pi experience
     dialog = tk.Toplevel(root)
     dialog.title("Select Raw CSV File")
-    dialog.geometry("700x550")
-    dialog.configure(bg="#e5e5e5")
     dialog.transient(root)
     dialog.grab_set()
-    
-    # Center the dialog
+
+    # Compute dialog size to fit small Pi touchscreens (keep margins)
     dialog.update_idletasks()
-    x = (dialog.winfo_screenwidth() // 2) - (700 // 2)
-    y = (dialog.winfo_screenheight() // 2) - (550 // 2)
-    dialog.geometry(f"700x550+{x}+{y}")
+    screen_w = dialog.winfo_screenwidth()
+    screen_h = dialog.winfo_screenheight()
+    dlg_w = min(700, max(480, screen_w - 20))
+    dlg_h = min(550, max(320, screen_h - 40))
+    sx = (screen_w // 2) - (dlg_w // 2)
+    sy = (screen_h // 2) - (dlg_h // 2)
+    dialog.geometry(f"{dlg_w}x{dlg_h}+{sx}+{sy}")
+    dialog.configure(bg="#e5e5e5")
     
     selected_file = [None]  # Use list to store result
     sort_by_date = [True]  # Default: sort by date (newest first)
@@ -1362,21 +1365,32 @@ if __name__ == '__main__':
 
             dialog = tk.Toplevel(root)
             dialog.title("Save to USB - Select Files")
-            # Use same size as Load Raw dialog for consistency on Pi touchscreen
-            dialog.geometry("700x550")
             dialog.transient(root)
             dialog.grab_set()
-            # Center the dialog like Load Raw dialog
+            
+            # Compute dialog size to fit small Pi touchscreens (use 95% of screen)
             dialog.update_idletasks()
-            sx = (dialog.winfo_screenwidth() // 2) - (700 // 2)
-            sy = (dialog.winfo_screenheight() // 2) - (550 // 2)
-            dialog.geometry(f"700x550+{sx}+{sy}")
+            screen_w = dialog.winfo_screenwidth()
+            screen_h = dialog.winfo_screenheight()
+            
+            # Use 95% of screen size with minimum constraints
+            w = int(min(700, max(400, screen_w * 0.95)))
+            h = int(min(550, max(280, screen_h * 0.95)))
+            sx = max(0, (screen_w - w) // 2)
+            sy = max(0, (screen_h - h) // 2)
+            
+            dialog.geometry(f"{w}x{h}+{sx}+{sy}")
             dialog.configure(bg="#e5e5e5")
 
-            # Use consistent fonts with Load Raw dialog
-            lbl_font = ("Arial", 11, "bold")
-            btn_font = ("Arial", 11, "bold")
-            cb_font = ("Arial", 10)
+            # Use consistent fonts - smaller for small screens
+            if sw <= 800:
+                lbl_font = ("Arial", 9, "bold")
+                btn_font = ("Arial", 9, "bold")
+                cb_font = ("Arial", 8)
+            else:
+                lbl_font = ("Arial", 11, "bold")
+                btn_font = ("Arial", 11, "bold")
+                cb_font = ("Arial", 10)
 
             # Left column: stacked CSV (top) and PNG (bottom). Right column: USB targets and actions
             left_col = tk.Frame(dialog)
@@ -1388,20 +1402,22 @@ if __name__ == '__main__':
             png_frame = tk.Frame(left_col)
             png_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=4, pady=4)
 
-            # Determine screen size (use dialog's screen) and set right column width
+            # Determine screen size and layout strategy
             sw = dialog.winfo_screenwidth()
             sh = dialog.winfo_screenheight()
-            w = 700
-            right_w = 120 if sw <= 1024 else max(180, int(w * 0.18))
-            right_frame = tk.Frame(dialog, width=right_w)
-            # On very small screens, place USB targets below the lists to conserve width
-            if sw <= 1024 or sh <= 600:
-                # stack vertically: left_col fills top, right_frame goes below
+            
+            # For very small screens (≤800px), stack vertically
+            if sw <= 800 or sh <= 480:
+                # Stack vertically: left_col fills top, right_frame goes below
                 left_col.pack_configure(side=tk.TOP, fill=tk.BOTH, expand=True)
-                right_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=6)
+                right_frame = tk.Frame(dialog)
+                right_frame.pack(side=tk.TOP, fill=tk.X, padx=4, pady=4)
             else:
+                # Side-by-side layout for larger screens
+                right_w = 120 if sw <= 1024 else max(140, int(w * 0.18))
+                right_frame = tk.Frame(dialog, width=right_w)
                 right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=6, pady=6)
-            right_frame.pack_propagate(False)
+                right_frame.pack_propagate(False)
 
             # CSV list as scrollable checkboxes (top)
             tk.Label(csv_frame, text="Raw CSV Files", font=lbl_font).pack(anchor="w")
@@ -1434,7 +1450,7 @@ if __name__ == '__main__':
             csv_checks_frame.bind('<Configure>', _on_canvas_config)
             png_checks_frame.bind('<Configure>', _on_canvas_config_png)
 
-            # Select/Clear buttons
+            # Select/Clear buttons - compact for small screens
             csv_btns = tk.Frame(csv_frame)
             csv_btns.pack(fill=tk.X)
             def csv_select_all():
@@ -1443,8 +1459,9 @@ if __name__ == '__main__':
             def csv_clear_all():
                 for v in csv_vars.values():
                     v.set(False)
-            tk.Button(csv_btns, text="Select All", command=csv_select_all, width=10, font=btn_font).pack(side=tk.LEFT, padx=4, pady=2)
-            tk.Button(csv_btns, text="Clear All", command=csv_clear_all, width=10, font=btn_font).pack(side=tk.LEFT, padx=4, pady=2)
+            btn_w = 8 if sw <= 800 else 10
+            tk.Button(csv_btns, text="Select All", command=csv_select_all, width=btn_w, font=btn_font).pack(side=tk.LEFT, padx=2, pady=2)
+            tk.Button(csv_btns, text="Clear All", command=csv_clear_all, width=btn_w, font=btn_font).pack(side=tk.LEFT, padx=2, pady=2)
 
             png_btns = tk.Frame(png_frame)
             png_btns.pack(fill=tk.X)
@@ -1454,12 +1471,13 @@ if __name__ == '__main__':
             def png_clear_all():
                 for v in png_vars.values():
                     v.set(False)
-            tk.Button(png_btns, text="Select All", command=png_select_all, width=10, font=btn_font).pack(side=tk.LEFT, padx=4, pady=2)
-            tk.Button(png_btns, text="Clear All", command=png_clear_all, width=10, font=btn_font).pack(side=tk.LEFT, padx=4, pady=2)
+            tk.Button(png_btns, text="Select All", command=png_select_all, width=btn_w, font=btn_font).pack(side=tk.LEFT, padx=2, pady=2)
+            tk.Button(png_btns, text="Clear All", command=png_clear_all, width=btn_w, font=btn_font).pack(side=tk.LEFT, padx=2, pady=2)
 
-            # USB mounts list
-            tk.Label(right_frame, text="USB Targets (/media/pi)", font=("Arial", 11, "bold")).pack(anchor="w")
-            usb_listbox = tk.Listbox(right_frame, selectmode=tk.SINGLE, font=("Courier", 10))
+            # USB mounts list - compact label
+            usb_label_text = "USB Targets" if sw <= 800 else "USB Targets (/media/pi)"
+            tk.Label(right_frame, text=usb_label_text, font=lbl_font).pack(anchor="w", padx=2)
+            usb_listbox = tk.Listbox(right_frame, selectmode=tk.SINGLE, font=("Courier", 9 if sw <= 800 else 10))
             usb_listbox.pack(fill=tk.BOTH, expand=True)
             usb_scroll = tk.Scrollbar(right_frame, command=usb_listbox.yview)
             usb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -1505,17 +1523,25 @@ if __name__ == '__main__':
                 except Exception:
                     pass
 
-            # Directory label and change button
+            # Directory label and change button - compact for small screens
             dir_var = tk.StringVar(value=src_dir)
-            dir_frame = tk.Frame(right_frame)
-            dir_frame.pack(fill=tk.X, padx=8)
-            tk.Label(dir_frame, textvariable=dir_var, font=cb_font).pack(side=tk.LEFT, padx=4)
+            
             def change_dir():
                 d = filedialog.askdirectory(initialdir=dir_var.get())
                 if d:
                     dir_var.set(d)
                     populate_files(d)
-            tk.Button(dir_frame, text="Change Source Folder", command=change_dir, font=btn_font).pack(side=tk.RIGHT)
+            
+            dir_frame = tk.Frame(right_frame)
+            dir_frame.pack(fill=tk.X, padx=2, pady=2)
+            
+            if sw <= 800:
+                # For small screens, show button only
+                tk.Button(dir_frame, text="Change Folder", command=change_dir, font=btn_font_size, width=btn_width).pack()
+            else:
+                # For larger screens, show label + button
+                tk.Label(dir_frame, textvariable=dir_var, font=cb_font).pack(side=tk.LEFT, padx=4)
+                tk.Button(dir_frame, text="Change Source Folder", command=change_dir, font=btn_font).pack(side=tk.RIGHT)
 
             populate_files(src_dir)
             populate_usb()
@@ -1529,9 +1555,17 @@ if __name__ == '__main__':
                 except Exception:
                     pass
 
-            # Action buttons - place inside right column so they fit beside USB list
+            # Action buttons - compact layout
             btns = tk.Frame(right_frame)
-            btns.pack(fill=tk.X, padx=4, pady=6)
+            btns.pack(fill=tk.X, padx=2, pady=4)
+
+            # Adjust button size based on screen
+            btn_width = 12 if sw <= 800 else 14
+            btn_font_size = ("Arial", 9, "bold") if sw <= 800 else ("Arial", 10, "bold")
+
+            tk.Button(btns, text="Transfer to USB", command=do_copy, bg="#4CAF50", fg="white", font=btn_font_size, width=btn_width).pack(pady=2)
+            tk.Button(btns, text="Eject USB", command=do_eject_selected, bg="#ff9800", fg="white", font=btn_font_size, width=btn_width).pack(pady=2)
+            tk.Button(btns, text="Cancel", command=do_cancel, bg="#f44336", fg="white", font=btn_font_size, width=btn_width).pack(pady=2)
 
             def do_copy():
                 sel_usb = None
