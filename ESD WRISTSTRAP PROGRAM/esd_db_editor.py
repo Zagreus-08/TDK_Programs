@@ -70,7 +70,7 @@ class ESDEditor(tk.Tk):
         ttk.Button(top, text='Delete Selected', command=self.delete_selected).pack(side='left', padx=6)
 
         # Treeview
-        cols = self.cols if self.cols else ['id', 'timestamp', 'emp_name', 'wrist', 'shoe']
+        cols = self.cols if self.cols else ['id', 'timestamp', 'emp_name', 'wrist', 'shoes']
         self.tree = ttk.Treeview(self, columns=cols, show='headings')
         for c in cols:
             self.tree.heading(c, text=c)
@@ -222,7 +222,7 @@ class RowEditor(tk.Toplevel):
         frm.pack(fill='both', expand=True, padx=8, pady=8)
 
         # Build inputs for common columns
-        common = ['timestamp', 'emp_name', 'wrist', 'shoe']
+        common = ['timestamp', 'emp_name', 'wrist', 'shoes']
         self.inputs = {}
         row = 0
         for c in (common + [x for x in cols if x not in common]):
